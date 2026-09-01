@@ -1,0 +1,7 @@
+*.exe
+*.o
+*.obj
+
+# Materiais pessoais para estudar a defesa (nao enviar ao repositorio)
+bomberman_defesa_comentado.cpp
+ROTEIRO_DEFESA.md
