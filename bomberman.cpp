@@ -13,6 +13,7 @@ WASD/setas: mover | Espaco: bomba | R: reiniciar | Q ou ESC: sair
 #include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <queue>
 #include <random>
 #include <string>
 #include <thread>
@@ -28,9 +29,11 @@ const int INTERVALO_INIMIGO_MS = 550;
 const int INTERVALO_MOVIMENTO_MS = 105;
 const int ALCANCE_EXPLOSAO = 2;
 const int PASSO_LOGICA_MS = 25;
+const int INTERVALO_BOT_MS = 170;
 
 enum TipoCelula { VAZIO, PAREDE_SOLIDA, PAREDE_FRAGIL };
 enum EstadoJogo { JOGANDO, VITORIA, DERROTA };
+enum ModoJogo { MENU, MANUAL, AUTOMATICO };
 
 struct Posicao { int linha, coluna; };
 struct Inimigo { Posicao posicao; bool vivo; };
@@ -47,9 +50,11 @@ vector<Inimigo> inimigos;
 vector<Posicao> areaExplosao;
 Bomba bomba;
 EstadoJogo estado = JOGANDO;
+ModoJogo modo = MENU;
 int pontos = 0;
 int tempoInimigosMs = 0;
 int tempoMovimentoMs = 0;
+int tempoBotMs = 0;
 bool executando = true;
 mt19937 gerador(random_device{}());
 HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -117,6 +122,12 @@ void reiniciar() {
     pontos = 0;
     tempoInimigosMs = 0;
     tempoMovimentoMs = 0;
+    tempoBotMs = 0;
+}
+
+void iniciarPartida(ModoJogo novoModo) {
+    modo = novoModo;
+    reiniciar();
 }
 
 void moverJogador(int dl, int dc) {
@@ -225,9 +236,114 @@ void verificarVitoria() {
     estado = VITORIA;
 }
 
+bool perigoDaBomba(Posicao p) {
+    if (!bomba.ativa) return false;
+    if (iguais(p, bomba.posicao)) return true;
+    int dl = p.linha - bomba.posicao.linha;
+    int dc = p.coluna - bomba.posicao.coluna;
+    if (dl != 0 && dc != 0) return false;
+    int distancia = abs(dl) + abs(dc);
+    if (distancia > ALCANCE_EXPLOSAO) return false;
+    int passoL = (dl > 0) - (dl < 0);
+    int passoC = (dc > 0) - (dc < 0);
+    for (int i = 1; i <= distancia; i++) {
+        int l = bomba.posicao.linha + passoL * i;
+        int c = bomba.posicao.coluna + passoC * i;
+        if (mapa[l][c] == PAREDE_SOLIDA) return false;
+        if (mapa[l][c] == PAREDE_FRAGIL) return i == distancia;
+    }
+    return true;
+}
+
+bool alvoParaBomba(Posicao p) {
+    const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+    for (int d = 0; d < 4; d++) {
+        for (int distancia = 1; distancia <= ALCANCE_EXPLOSAO; distancia++) {
+            int l = p.linha + direcoes[d][0] * distancia;
+            int c = p.coluna + direcoes[d][1] * distancia;
+            if (!dentro(l, c) || mapa[l][c] == PAREDE_SOLIDA) break;
+            if (mapa[l][c] == PAREDE_FRAGIL) return true;
+            if (temInimigo({l, c})) return true;
+        }
+    }
+    return false;
+}
+
+Posicao proximoPassoDoBot() {
+    const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+    bool visitado[LINHAS][COLUNAS]{};
+    Posicao anterior[LINHAS][COLUNAS];
+    queue<Posicao> fila;
+    fila.push(jogador);
+    visitado[jogador.linha][jogador.coluna] = true;
+    Posicao objetivo = jogador;
+    bool encontrou = false;
+
+    while (!fila.empty() && !encontrou) {
+        Posicao atual = fila.front();
+        fila.pop();
+        if (alvoParaBomba(atual)) {
+            objetivo = atual;
+            encontrou = true;
+            break;
+        }
+        for (const auto& direcao : direcoes) {
+            Posicao proxima{atual.linha + direcao[0], atual.coluna + direcao[1]};
+            if (!livre(proxima.linha, proxima.coluna) ||
+                visitado[proxima.linha][proxima.coluna] || temInimigo(proxima)) continue;
+            visitado[proxima.linha][proxima.coluna] = true;
+            anterior[proxima.linha][proxima.coluna] = atual;
+            fila.push(proxima);
+        }
+    }
+
+    if (!encontrou || iguais(objetivo, jogador)) return jogador;
+    while (!iguais(anterior[objetivo.linha][objetivo.coluna], jogador))
+        objetivo = anterior[objetivo.linha][objetivo.coluna];
+    return objetivo;
+}
+
+void atualizarBot() {
+    if (modo != AUTOMATICO || estado != JOGANDO) return;
+    if (bomba.ativa) {
+        if (!perigoDaBomba(jogador)) return;
+        const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+        for (const auto& direcao : direcoes) {
+            Posicao destino{jogador.linha + direcao[0], jogador.coluna + direcao[1]};
+            if (livre(destino.linha, destino.coluna) && !temInimigo(destino) &&
+                !perigoDaBomba(destino)) {
+                tempoMovimentoMs = 0;
+                moverJogador(direcao[0], direcao[1]);
+                return;
+            }
+        }
+        for (const auto& direcao : direcoes) {
+            Posicao destino{jogador.linha + direcao[0], jogador.coluna + direcao[1]};
+            if (livre(destino.linha, destino.coluna) && !temInimigo(destino)) {
+                tempoMovimentoMs = 0;
+                moverJogador(direcao[0], direcao[1]);
+                return;
+            }
+        }
+        return;
+    }
+    if (alvoParaBomba(jogador)) {
+        colocarBomba();
+        return;
+    }
+    Posicao destino = proximoPassoDoBot();
+    tempoMovimentoMs = 0;
+    moverJogador(destino.linha - jogador.linha, destino.coluna - jogador.coluna);
+}
+
 void atualizar(int tempoMs) {
     if (estado != JOGANDO) return;
     tempoMovimentoMs = max(0, tempoMovimentoMs - tempoMs);
+    tempoBotMs += tempoMs;
+    if (modo == AUTOMATICO && tempoBotMs >= INTERVALO_BOT_MS) {
+        tempoBotMs = 0;
+        atualizarBot();
+    }
     atualizarBomba(tempoMs);
     tempoInimigosMs += tempoMs;
     if (tempoInimigosMs >= INTERVALO_INIMIGO_MS) {
@@ -236,6 +352,7 @@ void atualizar(int tempoMs) {
     }
     if (temInimigo(jogador)) estado = DERROTA;
     verificarVitoria();
+    if (modo == AUTOMATICO && estado == DERROTA) reiniciar();
 }
 
 void cor(WORD valor) { SetConsoleTextAttribute(console, valor); }
@@ -268,12 +385,28 @@ void posicionarCursor(short x, short y) {
 
 void desenhar() {
     posicionarCursor(0, 0);
+    if (modo == MENU) {
+        cor(11);
+        cout << "+--------------------------------+\n";
+        cout << "|       BOMBERMAN CONSOLE        |\n";
+        cout << "+--------------------------------+\n\n";
+        cor(15);
+        cout << "       ESCOLHA O MODO DE JOGO     \n\n";
+        cor(10); cout << "       [1] Jogar manualmente      \n\n";
+        cor(14); cout << "       [2] Jogo automatico 2x     \n\n";
+        cor(7);  cout << "       [Q] Sair                   \n";
+        for (int i = 0; i < 14; i++) cout << "                                    \n";
+        cout.flush();
+        return;
+    }
     cor(11);
     cout << "+--------------------------------+\n";
     cout << "|       BOMBERMAN CONSOLE        |\n";
     cout << "+--------------------------------+\n";
     cor(15);
-    cout << " Pontos: " << pontos << "   Inimigos: " << inimigosVivos() << "          \n";
+    cout << " Pontos: " << pontos << "   Inimigos: " << inimigosVivos();
+    if (modo == AUTOMATICO) cout << "   AUTO 2x\n";
+    else cout << "          \n";
     if (bomba.ativa && !bomba.explodindo)
         cout << " Bomba explode em: " << (bomba.tempoMs + 999) / 1000 << "s              \n";
     else if (bomba.explodindo) cout << " BOOM! Afaste-se das chamas!       \n";
@@ -287,7 +420,7 @@ void desenhar() {
     }
     cor(7);
     cout << " WASD/SETAS: mover  ESPACO: bomba  \n";
-    cout << " R: reiniciar       Q/ESC: sair    \n";
+    cout << " R: reiniciar  M: menu  Q/ESC: sair\n";
     if (estado == VITORIA) { cor(10); cout << "       VOCE VENCEU! Pressione R.   \n"; }
     else if (estado == DERROTA) { cor(12); cout << "       GAME OVER! Pressione R.     \n"; }
     else cout << "                                    \n";
@@ -298,6 +431,12 @@ void desenhar() {
 void lerTeclado() {
     if (!_kbhit()) return;
     int tecla = _getch();
+    if (modo == MENU) {
+        if (tecla == '1') iniciarPartida(MANUAL);
+        else if (tecla == '2') iniciarPartida(AUTOMATICO);
+        else if (tecla == 'q' || tecla == 'Q' || tecla == 27) executando = false;
+        return;
+    }
     if (tecla == 0 || tecla == 224) {
         int especial = _getch();
         if (especial == 72) moverJogador(-1, 0);
@@ -306,7 +445,8 @@ void lerTeclado() {
         else if (especial == 77) moverJogador(0, 1);
         return;
     }
-    if (tecla == 'w' || tecla == 'W') moverJogador(-1, 0);
+    if (tecla == 'm' || tecla == 'M') modo = MENU;
+    else if (tecla == 'w' || tecla == 'W') moverJogador(-1, 0);
     else if (tecla == 's' || tecla == 'S') moverJogador(1, 0);
     else if (tecla == 'a' || tecla == 'A') moverJogador(0, -1);
     else if (tecla == 'd' || tecla == 'D') moverJogador(0, 1);
@@ -341,7 +481,6 @@ void prepararConsole() {
 
 int main() {
     prepararConsole();
-    reiniciar();
     auto ultimoInstante = chrono::steady_clock::now();
 
     while (executando) {
@@ -350,7 +489,8 @@ int main() {
         if (decorrido >= PASSO_LOGICA_MS) {
             ultimoInstante = agora;
             lerTeclado();
-            atualizar(min(decorrido, 100));
+            int multiplicador = modo == AUTOMATICO ? 2 : 1;
+            atualizar(min(decorrido, 100) * multiplicador);
             desenhar();
         }
         this_thread::sleep_for(chrono::milliseconds(2));

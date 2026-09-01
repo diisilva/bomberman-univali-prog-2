@@ -1,4 +1,4 @@
-# Bomberman — Algoritmos e Programação II
+# Bomberman para Algoritmos e Programação II
 
 Trabalho M1 da disciplina de Algoritmos e Programação II da UNIVALI.
 
@@ -83,6 +83,15 @@ Depois de compilar:
 
 O jogo abre na própria janela do terminal.
 
+## Menu e modos de jogo
+
+Ao abrir o programa, o menu oferece duas opções:
+
+1. `Jogar manualmente`, para controlar o personagem normalmente.
+2. `Jogo automático 2x`, para observar o programa jogar sozinho até vencer.
+
+No modo automático, o jogador procura inimigos e paredes frágeis por meio de uma busca em largura. Ele coloca bombas quando encontra um alvo, tenta sair da área da explosão e continua jogando em velocidade 2x. Se for derrotado, uma nova tentativa começa automaticamente e permanece ativa até concluir a partida.
+
 ## Controles
 
 | Tecla | Ação |
@@ -92,6 +101,9 @@ O jogo abre na própria janela do terminal.
 | `Espaço` | Colocar uma bomba |
 | `R` | Reiniciar a partida |
 | `Q` ou `Esc` | Encerrar o jogo |
+| `M` | Voltar ao menu |
+| `1` no menu | Iniciar o modo manual |
+| `2` no menu | Iniciar o modo automático 2x |
 
 Não é necessário pressionar Enter durante a partida.
 
@@ -125,10 +137,11 @@ Não é necessário pressionar Enter durante a partida.
 - [x] A explosão fica visível durante aproximadamente 650 milissegundos.
 - [x] O jogador vence quando todos os inimigos morrem e ele permanece vivo.
 - [x] Há derrota por colisão com inimigo ou por explosão.
+- [x] O menu permite escolher entre jogo manual e demonstração automática em velocidade 2x.
 
 ### Técnicas
 
-- [ ] Identificação dos desenvolvedores — **preencher os nomes antes da entrega**.
+- [ ] Identificação dos desenvolvedores, portanto é necessário **preencher os nomes antes da entrega**.
 - [x] O programa é dividido em sub-rotinas pequenas e específicas.
 - [x] As sub-rotinas recebem parâmetros e usam referências quando precisam alterar os dados originais, como `atingirPersonagens(vector<Inimigo>&, EstadoJogo&, int&)`.
 - [x] Mapa, jogador, inimigos, bomba, atualização, entrada e desenho estão segmentados.
@@ -145,6 +158,8 @@ Não é necessário pressionar Enter durante a partida.
 - `verificarVitoria()` controla o fim da partida.
 - `desenhar()` atualiza a interface colorida do console.
 - `lerTeclado()` recebe os comandos sem exigir Enter.
+- `proximoPassoDoBot()` usa busca em largura para escolher o caminho automático.
+- `atualizarBot()` decide quando andar, fugir ou colocar uma bomba.
 
 ## Arquivos do projeto
 
