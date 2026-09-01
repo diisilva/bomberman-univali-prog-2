@@ -1,170 +1,158 @@
-# Bomberman para Algoritmos e Programação II
+# Bomberman — Algoritmos e Programação II
 
-Trabalho M1 da disciplina de Algoritmos e Programação II da UNIVALI.
+Trabalho M1 da disciplina de Algoritmos e Programação II da UNIVALI, desenvolvido por Diego Silva e Gabriel Bianchessi.
 
-O jogo roda diretamente no terminal do Windows e **não utiliza GLUT, OpenGL ou outra biblioteca gráfica externa**. A interface colorida é desenhada com recursos do próprio console do Windows.
+O jogo usa uma janela nativa do Windows. A lógica continua em C++ com matriz, structs, vetores e sub-rotinas; a apresentação usa Win32, GDI e GDI+ para desenhar o mapa e os sprites PNG com transparência.
 
-## Antes da entrega
+## Tecnologias da interface gráfica
 
-Edite o início de `bomberman.cpp` e substitua:
+O projeto não utiliza motor gráfico. Unity, Unreal, Godot, GLUT, SDL e SFML não fazem parte da aplicação. A interface foi construída diretamente com recursos nativos do Windows, divididos em três responsabilidades.
 
-```cpp
-Desenvolvedores: PREENCHER COM OS NOMES DA EQUIPE
+### Win32 API: janela, teclado, tempo e eventos
+
+A Win32 API fornece a estrutura básica da aplicação:
+
+- `WinMain()` é o ponto de entrada da versão gráfica e registra a classe da janela;
+- `CreateWindowExW()` cria a janela principal com título, borda e tamanho calculado;
+- `processarMensagem()` recebe as mensagens enviadas pelo Windows;
+- `WM_KEYDOWN` informa quando uma tecla de controle foi pressionada;
+- `WM_TIMER` atualiza periodicamente a lógica do jogo;
+- `WM_PAINT` solicita que o conteúdo da janela seja redesenhado;
+- `WM_DPICHANGED` reajusta a janela quando ela muda para uma tela com outra escala;
+- `WM_DESTROY` encerra o timer, libera os assets e finaliza a aplicação;
+- `GetMessageW()`, `TranslateMessage()` e `DispatchMessageW()` formam o loop de mensagens.
+
+O timer não contém as regras do jogo. Ele calcula o tempo transcorrido e chama `atualizar()`, que continua responsável por bomba, inimigos, colisões, vitória, derrota e modo automático. Assim, a API do Windows coordena quando atualizar e desenhar, mas não decide o gameplay.
+
+### GDI: formas geométricas e buffer duplo
+
+GDI é a parte tradicional da API gráfica do Windows. Neste projeto, ela fornece os contextos e bitmaps necessários para montar cada quadro fora da tela:
+
+1. `BeginPaint()` entrega o contexto de desenho da janela;
+2. `CreateCompatibleDC()` cria um contexto de memória;
+3. `CreateCompatibleBitmap()` cria um bitmap com o tamanho da área útil;
+4. todo o HUD, mapa, formas e sprites é desenhado primeiro nesse bitmap;
+5. `BitBlt()` copia o quadro pronto para a janela em uma única operação;
+6. os objetos temporários são restaurados e liberados com `DeleteObject()` e `DeleteDC()`.
+
+Esse processo é chamado de **buffer duplo**. Sem ele, o usuário poderia enxergar a janela sendo apagada e redesenhada por partes, produzindo flickering. O mapa básico também usa retângulos e linhas: chão verde, parede sólida cinza, parede frágil azul, explosão laranja e grade de separação.
+
+### GDI+: PNG, alpha e qualidade de escala
+
+GDI+ complementa o GDI com suporte simples a imagens PNG e transparência:
+
+- `GdiplusStartup()` inicializa a biblioteca uma vez antes da janela;
+- `Gdiplus::Image` carrega `bomberman.png`, `perfil.png` e `bomba.png`;
+- os objetos ficam armazenados em `unique_ptr` e são reutilizados em todos os quadros;
+- `DrawImage()` desenha o PNG preservando o canal alpha;
+- `InterpolationModeHighQualityBicubic` melhora a redução das imagens originais;
+- `GdiplusShutdown()` encerra a biblioteca depois que a janela fecha.
+
+`desenharSpriteNaCelula()` calcula um único fator de escala:
+
+```text
+escala = min(largura disponível / largura original,
+             altura disponível / altura original)
 ```
 
-pelos nomes de todos os integrantes. O enunciado exige a identificação dos desenvolvedores e a defesa deve ser feita em dupla ou trio. Trabalhos individuais recebem a penalidade descrita pelo professor.
+O mesmo fator é aplicado à largura e à altura. Depois, a função calcula o espaço restante e centraliza o sprite, mantendo uma margem de quatro unidades-base. Isso evita achatamento, alongamento, corte e desalinhamento. O alpha original produz o fundo transparente ao redor do personagem, do inimigo e da bomba.
+
+### Relação com a lógica da disciplina
+
+Win32, GDI e GDI+ formam somente a camada de entrada e apresentação. O mapa continua em uma matriz, as entidades continuam em structs e vetores, e as regras continuam implementadas nas sub-rotinas do próprio projeto. A renderização consulta o estado atual, mas não altera as regras de colisão, explosão ou movimentação.
 
 ## Pré-requisitos
 
 - Windows 10 ou Windows 11;
-- compilador GCC/G++ com suporte ao C++17;
-- PowerShell para usar o script de compilação;
-- nenhuma biblioteca gráfica é necessária.
+- GCC/G++ com suporte a C++17 (recomendado: MSYS2 UCRT64);
+- PowerShell;
+- nenhuma biblioteca externa: GDI e GDI+ fazem parte do Windows.
 
-O código utiliza `windows.h` e `conio.h` para controlar cores, tamanho da janela e leitura das teclas sem precisar pressionar Enter. Por isso esta versão foi preparada especificamente para Windows.
+## Como compilar
 
-## Como verificar o compilador
-
-Abra o PowerShell nesta pasta e execute:
+No PowerShell, dentro da pasta do projeto:
 
 ```powershell
-g++ --version
+powershell -ExecutionPolicy Bypass -File .\compilar.ps1
 ```
 
-Se aparecer a versão do GCC, o compilador está pronto. Se o comando não existir, instale o MSYS2 e o compilador UCRT64:
+O comando equivalente é:
 
-1. Baixe e instale o MSYS2 em <https://www.msys2.org/>.
-2. Abra o terminal **MSYS2 UCRT64**.
-3. Execute:
+```powershell
+g++ -std=c++17 -Wall -Wextra -pedantic bomberman.cpp -o bomberman.exe -lgdiplus -mwindows
+```
+
+Se `g++` não estiver no `Path`, o script tenta automaticamente `C:\msys64\ucrt64\bin\g++.exe`. Caso precise instalar o compilador, abra o terminal MSYS2 UCRT64 e execute:
 
 ```bash
 pacman -Syu
 pacman -S --needed mingw-w64-ucrt-x86_64-gcc
 ```
 
-4. Adicione `C:\msys64\ucrt64\bin` à variável de ambiente `Path` do Windows.
-5. Feche e abra novamente o PowerShell.
-
-## Como compilar
-
-No PowerShell, entre na pasta do projeto:
-
-```powershell
-cd D:\algoritmos_prog_2\bomberman-univali-prog-2
-```
-
-Use o script incluído:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\compilar.ps1
-```
-
-Ou compile manualmente:
-
-```powershell
-g++ -std=c++17 -Wall -Wextra -pedantic bomberman.cpp -o bomberman.exe
-```
-
-Se `g++` não estiver no `Path`, use o caminho completo do MSYS2:
-
-```powershell
-& "C:\msys64\ucrt64\bin\g++.exe" -std=c++17 -Wall -Wextra -pedantic bomberman.cpp -o bomberman.exe
-```
-
-Uma compilação correta não deve apresentar erros nem avisos.
+Se a compilação informar que `bomberman.exe` está em uso, feche uma instância anterior do jogo e tente novamente.
 
 ## Como executar
-
-Depois de compilar:
 
 ```powershell
 .\bomberman.exe
 ```
 
-O jogo abre na própria janela do terminal.
+A janela abre com tamanho calculado a partir de células de 52×52 pixels, além de áreas reservadas ao cabeçalho e ao rodapé. Em escala de 100%, sua área útil é de 780×852 pixels. O programa é DPI-aware e reajusta desenho, texto e sprites de acordo com a escala do Windows.
 
-## Menu e modos de jogo
+Os assets são procurados relativamente ao executável:
 
-Ao abrir o programa, o menu oferece duas opções:
+- `assets/bomberman.png`: jogador;
+- `assets/perfil.png`: inimigos;
+- `assets/bomba.png`: bomba.
 
-1. `Jogar manualmente`, para controlar o personagem normalmente.
-2. `Jogo automático 2x`, para observar o programa jogar sozinho até vencer.
+Eles são carregados uma única vez na inicialização. Se algum arquivo não estiver disponível, o jogo informa o caminho e usa `PJ`, `IN` ou `BO` como fallback, sem encerrar inesperadamente.
 
-No modo automático, o jogador procura inimigos e paredes frágeis por meio de uma busca em largura. Ele coloca bombas quando encontra um alvo, tenta sair da área da explosão e continua jogando em velocidade 2x. Se for derrotado, uma nova tentativa começa automaticamente e permanece ativa até concluir a partida.
-
-## Controles
+## Menu e controles
 
 | Tecla | Ação |
 | --- | --- |
-| `W`, `A`, `S`, `D` | Movimentar o jogador |
-| Setas | Movimentar o jogador |
+| `1` no menu | Iniciar modo manual |
+| `2` no menu | Iniciar modo automático 1,5x |
+| `W`, `A`, `S`, `D` ou setas | Movimentar o jogador |
 | `Espaço` | Colocar uma bomba |
 | `R` | Reiniciar a partida |
-| `Q` ou `Esc` | Encerrar o jogo |
 | `M` | Voltar ao menu |
-| `1` no menu | Iniciar o modo manual |
-| `2` no menu | Iniciar o modo automático 2x |
+| `Q` ou `Esc` | Encerrar o jogo |
 
-Não é necessário pressionar Enter durante a partida.
+No modo automático, o jogador usa busca em largura para procurar inimigos e paredes frágeis, coloca bombas, tenta fugir da área de explosão e reinicia automaticamente após uma derrota.
 
-## Elementos do mapa
+## Elementos visuais
 
-| Elemento | Aparência | Comportamento |
-| --- | --- | --- |
-| Jogador | Bloco azul `PJ` | Personagem controlado pelo usuário |
-| Inimigo | Bloco vermelho `IN` | Move-se aleatoriamente |
-| Bomba | Bloco preto `BO` | Explode depois de aproximadamente 2,2 segundos |
-| Explosão | Bloco laranja `**` | Mata personagens e destrói paredes frágeis |
-| Parede sólida | Bloco cinza `##` | Bloqueia e não pode ser destruída |
-| Parede frágil | Bloco azul `+=` | Bloqueia e pode ser destruída |
+| Elemento | Representação |
+| --- | --- |
+| Jogador | Sprite `bomberman.png` |
+| Inimigo | Sprite `perfil.png` |
+| Bomba | Sprite `bomba.png` |
+| Chão | Retângulo verde |
+| Parede sólida | Retângulo cinza com detalhe |
+| Parede frágil | Retângulo azul |
+| Explosão | Retângulo laranja |
 
-## Verificação dos requisitos do enunciado
-
-### Funcionalidades
-
-- [x] O jogador se move corretamente nas quatro direções.
-- [x] O jogador pode entrar e sair de uma posição onde existe bomba.
-- [x] Paredes sólidas e frágeis bloqueiam o jogador.
-- [x] Há intervalo de movimento para evitar repetição descontrolada de tecla.
-- [x] A bomba é colocada na posição atual do jogador.
-- [x] Apenas uma bomba pode existir por vez.
-- [x] Uma nova bomba pode ser colocada depois que a explosão termina.
-- [x] O jogador morre ao colidir com um inimigo.
-- [x] O jogador morre ao entrar ou permanecer na explosão.
-- [x] Cada inimigo tenta mover de 1 a 3 quadrados em uma direção aleatória, parando diante de obstáculos.
-- [x] Paredes sólidas bloqueiam a explosão e não são destruídas.
-- [x] A primeira parede frágil atingida em cada direção é destruída e bloqueia a continuação daquele raio.
-- [x] A explosão fica visível durante aproximadamente 650 milissegundos.
-- [x] O jogador vence quando todos os inimigos morrem e ele permanece vivo.
-- [x] Há derrota por colisão com inimigo ou por explosão.
-- [x] O menu permite escolher entre jogo manual e demonstração automática em velocidade 2x.
-
-### Técnicas
-
-- [ ] Identificação dos desenvolvedores, portanto é necessário **preencher os nomes antes da entrega**.
-- [x] O programa é dividido em sub-rotinas pequenas e específicas.
-- [x] As sub-rotinas recebem parâmetros e usam referências quando precisam alterar os dados originais, como `atingirPersonagens(vector<Inimigo>&, EstadoJogo&, int&)`.
-- [x] Mapa, jogador, inimigos, bomba, atualização, entrada e desenho estão segmentados.
+`desenharSpriteNaCelula()` preserva a proporção original, aplica margem e centraliza o PNG. A escala usada é o menor valor entre a largura e a altura disponíveis, evitando corte ou deformação. A tela inteira é montada em um buffer secundário e copiada de uma vez para a janela, reduzindo flickering.
 
 ## Organização do código
 
-- `TipoCelula` representa os espaços vazios e os dois tipos de parede.
-- `EstadoJogo` representa partida em andamento, vitória e derrota.
-- `Posicao`, `Inimigo` e `Bomba` agrupam os dados das entidades.
-- `criarMapa()` monta o cenário.
-- `moverJogador()` e `moverInimigos()` cuidam dos movimentos.
-- `colocarBomba()`, `iniciarExplosao()` e `atualizarBomba()` controlam a bomba.
-- `atingirPersonagens()` trata mortes causadas pela explosão.
-- `verificarVitoria()` controla o fim da partida.
-- `desenhar()` atualiza a interface colorida do console.
-- `lerTeclado()` recebe os comandos sem exigir Enter.
-- `proximoPassoDoBot()` usa busca em largura para escolher o caminho automático.
-- `atualizarBot()` decide quando andar, fugir ou colocar uma bomba.
+- `TipoCelula`, `EstadoJogo` e `ModoJogo` representam os estados principais;
+- `Posicao`, `Inimigo` e `Bomba` agrupam os dados das entidades;
+- `mapa[LINHAS][COLUNAS]` mantém o cenário em uma matriz fixa;
+- `vector<Inimigo>` e `vector<Posicao>` guardam inimigos e células da explosão;
+- `criarMapa()`, `moverJogador()`, `moverInimigos()`, `colocarBomba()`, `iniciarExplosao()`, `atualizarBomba()` e `atualizarBot()` preservam a lógica do jogo;
+- `carregarAssets()` e `liberarAssets()` controlam o ciclo de vida dos PNGs;
+- `desenharMapa()`, `desenharCelula()`, `desenharHUD()` e `desenharSpriteNaCelula()` cuidam somente da apresentação;
+- `processarMensagem()` recebe teclado, timer, pintura, DPI e fechamento da janela.
 
-## Arquivos do projeto
+## Arquivos
 
-- `bomberman.cpp`: código-fonte do jogo;
-- `compilar.ps1`: script de compilação para PowerShell;
-- `README.md`: documentação, requisitos e instruções.
+- `bomberman.cpp`: fonte oficial do jogo;
+- `assets/`: sprites PNG;
+- `compilar.ps1`: compilação reproduzível;
+- `bomberman_defesa_comentado.cpp`: guia compilável de leitura do fonte;
+- `ROTEIRO_DEFESA.md`: roteiro para a apresentação acadêmica;
+- `README.md`: instruções do projeto.
 
-O arquivo `bomberman.exe` é gerado localmente pela compilação.
+O arquivo `bomberman.exe` é gerado localmente e não precisa ser versionado.

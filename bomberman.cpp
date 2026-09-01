@@ -2,22 +2,25 @@
 Algoritmos e programação II, Trabalho M1
 Desenvolvedores: Diego Silva |  Gabriel Bianchessi
 
-Feito com matriz, structs, vetores e sub-rotinas. As funcoes de console do
-Windows servem somente para ler teclas sem Enter, colorir e redesenhar a tela.
+Feito com matriz, structs, vetores e sub-rotinas. A interface usa Win32 e
+GDI+ para abrir uma janela propria e desenhar os sprites PNG.
 
 WASD/setas: mover | Espaco: bomba | R: reiniciar | Q ou ESC: sair
 */
 
 #include <windows.h>
-#include <conio.h>
+#include <gdiplus.h>
 #include <algorithm>
 #include <chrono>
-#include <iostream>
+#include <memory>
 #include <queue>
 #include <random>
 #include <string>
-#include <thread>
 #include <vector>
+
+#ifdef _MSC_VER
+#pragma comment(lib, "gdiplus.lib")
+#endif
 
 using namespace std;
 
@@ -30,6 +33,11 @@ const int INTERVALO_MOVIMENTO_MS = 105;
 const int ALCANCE_EXPLOSAO = 2;
 const int PASSO_LOGICA_MS = 25;
 const int INTERVALO_BOT_MS = 170;
+const int TAMANHO_CELULA = 52;
+const int ALTURA_CABECALHO = 104;
+const int ALTURA_RODAPE = 72;
+const int LARGURA_JOGO = COLUNAS * TAMANHO_CELULA;
+const int ALTURA_JOGO = ALTURA_CABECALHO + LINHAS * TAMANHO_CELULA + ALTURA_RODAPE;
 
 enum TipoCelula { VAZIO, PAREDE_SOLIDA, PAREDE_FRAGIL };
 enum EstadoJogo { JOGANDO, VITORIA, DERROTA };
@@ -57,7 +65,12 @@ int tempoMovimentoMs = 0;
 int tempoBotMs = 0;
 bool executando = true;
 mt19937 gerador(random_device{}());
-HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
+HWND janelaPrincipal = nullptr;
+ULONG_PTR tokenGdiPlus = 0;
+unique_ptr<Gdiplus::Image> spriteJogador;
+unique_ptr<Gdiplus::Image> spriteInimigo;
+unique_ptr<Gdiplus::Image> spriteBomba;
+float escalaDpi = 1.0f;
 
 bool iguais(Posicao a, Posicao b) {
     return a.linha == b.linha && a.coluna == b.coluna;
@@ -355,149 +368,274 @@ void atualizar(int tempoMs) {
     if (modo == AUTOMATICO && estado == DERROTA) reiniciar();
 }
 
-void cor(WORD valor) { SetConsoleTextAttribute(console, valor); }
-
-void desenharBloco(WORD fundo, const string& texto = "  ", WORD frente = 15) {
-    cor(static_cast<WORD>((fundo << 4) | frente));
-    cout << texto;
-}
-
-void desenharCelula(int l, int c) {
-    Posicao p{l, c};
-    if (naExplosao(p)) desenharBloco(6, "**", 14);
-    else if (iguais(jogador, p)) desenharBloco(9, "PJ", 15);
-    else if (temInimigo(p)) desenharBloco(4, "IN", 15);
-    else if (bomba.ativa && iguais(bomba.posicao, p)) desenharBloco(0, "BO", 14);
-    else if (mapa[l][c] == PAREDE_SOLIDA) desenharBloco(8, "##", 7);
-    else if (mapa[l][c] == PAREDE_FRAGIL) desenharBloco(1, "+=", 11);
-    else desenharBloco(2, "  ", 2);
-}
-
 int inimigosVivos() {
     int total = 0;
     for (const Inimigo& inimigo : inimigos) if (inimigo.vivo) total++;
     return total;
 }
 
-void posicionarCursor(short x, short y) {
-    SetConsoleCursorPosition(console, {x, y});
+int px(int valor) { return static_cast<int>(valor * escalaDpi + 0.5f); }
+
+wstring pastaDoExecutavel() {
+    wchar_t caminho[MAX_PATH];
+    DWORD tamanho = GetModuleFileNameW(nullptr, caminho, MAX_PATH);
+    wstring pasta(caminho, tamanho);
+    size_t separador = pasta.find_last_of(L"\\/");
+    return separador == wstring::npos ? L"." : pasta.substr(0, separador);
 }
 
-void desenhar() {
-    posicionarCursor(0, 0);
-    if (modo == MENU) {
-        cor(11);
-        cout << "+--------------------------------+\n";
-        cout << "|       BOMBERMAN CONSOLE        |\n";
-        cout << "+--------------------------------+\n\n";
-        cor(15);
-        cout << "       ESCOLHA O MODO DE JOGO     \n\n";
-        cor(10); cout << "       [1] Jogar manualmente      \n\n";
-        cor(14); cout << "       [2] Jogo automatico 2x     \n\n";
-        cor(7);  cout << "       [Q] Sair                   \n";
-        for (int i = 0; i < 14; i++) cout << "                                    \n";
-        cout.flush();
+unique_ptr<Gdiplus::Image> carregarSprite(const wstring& nome) {
+    wstring caminho = pastaDoExecutavel() + L"\\assets\\" + nome;
+    auto imagem = make_unique<Gdiplus::Image>(caminho.c_str());
+    if (imagem->GetLastStatus() == Gdiplus::Ok) return imagem;
+    wstring mensagem = L"Nao foi possivel carregar o asset:\n" + caminho +
+                       L"\n\nO jogo usara uma representacao textual.";
+    MessageBoxW(janelaPrincipal, mensagem.c_str(), L"Asset nao encontrado", MB_OK | MB_ICONWARNING);
+    return nullptr;
+}
+
+void carregarAssets() {
+    spriteJogador = carregarSprite(L"bomberman.png");
+    spriteInimigo = carregarSprite(L"perfil.png");
+    spriteBomba = carregarSprite(L"bomba.png");
+}
+
+void liberarAssets() {
+    spriteJogador.reset();
+    spriteInimigo.reset();
+    spriteBomba.reset();
+}
+
+void desenharTexto(Gdiplus::Graphics& g, const wstring& texto, float x, float y,
+                   float tamanho, Gdiplus::Color cor, bool centralizado = false) {
+    Gdiplus::Font fonte(L"Segoe UI", px(static_cast<int>(tamanho)), Gdiplus::FontStyleRegular,
+                       Gdiplus::UnitPixel);
+    Gdiplus::SolidBrush pincel(cor);
+    Gdiplus::StringFormat formato;
+    if (centralizado) formato.SetAlignment(Gdiplus::StringAlignmentCenter);
+    Gdiplus::RectF area(px(static_cast<int>(x)), px(static_cast<int>(y)),
+                        px(LARGURA_JOGO - static_cast<int>(x) * 2), px(50));
+    g.DrawString(texto.c_str(), -1, &fonte, area, &formato, &pincel);
+}
+
+void desenharSpriteNaCelula(Gdiplus::Graphics& g, Gdiplus::Image* imagem,
+                            int linha, int coluna, const wchar_t* fallback) {
+    int margem = px(4);
+    int xCelula = px(coluna * TAMANHO_CELULA);
+    int yCelula = px(ALTURA_CABECALHO + linha * TAMANHO_CELULA);
+    if (!imagem) {
+        desenharTexto(g, fallback, coluna * TAMANHO_CELULA + 4,
+                      ALTURA_CABECALHO + linha * TAMANHO_CELULA + 10, 18,
+                      Gdiplus::Color(255, 255, 255, 255));
         return;
     }
-    cor(11);
-    cout << "+--------------------------------+\n";
-    cout << "|       BOMBERMAN CONSOLE        |\n";
-    cout << "+--------------------------------+\n";
-    cor(15);
-    cout << " Pontos: " << pontos << "   Inimigos: " << inimigosVivos();
-    if (modo == AUTOMATICO) cout << "   AUTO 2x\n";
-    else cout << "          \n";
-    if (bomba.ativa && !bomba.explodindo)
-        cout << " Bomba explode em: " << (bomba.tempoMs + 999) / 1000 << "s              \n";
-    else if (bomba.explodindo) cout << " BOOM! Afaste-se das chamas!       \n";
-    else cout << " Espaco coloca uma bomba           \n";
-
-    for (int l = 0; l < LINHAS; l++) {
-        cout << " ";
-        for (int c = 0; c < COLUNAS; c++) desenharCelula(l, c);
-        cor(15);
-        cout << " \n";
-    }
-    cor(7);
-    cout << " WASD/SETAS: mover  ESPACO: bomba  \n";
-    cout << " R: reiniciar  M: menu  Q/ESC: sair\n";
-    if (estado == VITORIA) { cor(10); cout << "       VOCE VENCEU! Pressione R.   \n"; }
-    else if (estado == DERROTA) { cor(12); cout << "       GAME OVER! Pressione R.     \n"; }
-    else cout << "                                    \n";
-    cor(7);
-    cout.flush();
+    float disponivel = static_cast<float>(px(TAMANHO_CELULA) - 2 * margem);
+    float escala = min(disponivel / imagem->GetWidth(), disponivel / imagem->GetHeight());
+    int largura = static_cast<int>(imagem->GetWidth() * escala + 0.5f);
+    int altura = static_cast<int>(imagem->GetHeight() * escala + 0.5f);
+    int x = xCelula + (px(TAMANHO_CELULA) - largura) / 2;
+    int y = yCelula + (px(TAMANHO_CELULA) - altura) / 2;
+    g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    g.DrawImage(imagem, x, y, largura, altura);
 }
 
-void lerTeclado() {
-    if (!_kbhit()) return;
-    int tecla = _getch();
+void desenharCelula(Gdiplus::Graphics& g, int l, int c) {
+    int x = px(c * TAMANHO_CELULA);
+    int y = px(ALTURA_CABECALHO + l * TAMANHO_CELULA);
+    int lado = px(TAMANHO_CELULA);
+    Gdiplus::Color cor = mapa[l][c] == PAREDE_SOLIDA ? Gdiplus::Color(255, 105, 110, 115) :
+                         mapa[l][c] == PAREDE_FRAGIL ? Gdiplus::Color(255, 45, 105, 180) :
+                                                      Gdiplus::Color(255, 38, 128, 67);
+    if (naExplosao({l, c})) cor = Gdiplus::Color(255, 255, 158, 35);
+    Gdiplus::SolidBrush fundo(cor);
+    g.FillRectangle(&fundo, x, y, lado, lado);
+    Gdiplus::Pen grade(Gdiplus::Color(100, 20, 35, 25), max(1, px(1)));
+    g.DrawRectangle(&grade, x, y, lado - 1, lado - 1);
+    if (mapa[l][c] == PAREDE_SOLIDA) {
+        Gdiplus::Pen detalhe(Gdiplus::Color(150, 210, 215, 220), max(1, px(1)));
+        g.DrawLine(&detalhe, x + px(5), y + lado / 2, x + lado - px(5), y + lado / 2);
+    }
+}
+
+void desenharMapa(Gdiplus::Graphics& g) {
+    for (int l = 0; l < LINHAS; l++) for (int c = 0; c < COLUNAS; c++) desenharCelula(g, l, c);
+    if (bomba.ativa && !bomba.explodindo)
+        desenharSpriteNaCelula(g, spriteBomba.get(), bomba.posicao.linha, bomba.posicao.coluna, L"BO");
+    for (const Inimigo& inimigo : inimigos)
+        if (inimigo.vivo) desenharSpriteNaCelula(g, spriteInimigo.get(), inimigo.posicao.linha,
+                                                  inimigo.posicao.coluna, L"IN");
+    desenharSpriteNaCelula(g, spriteJogador.get(), jogador.linha, jogador.coluna, L"PJ");
+}
+
+void desenharHUD(Gdiplus::Graphics& g) {
+    Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 20, 28, 38));
+    g.FillRectangle(&fundo, 0, 0, px(LARGURA_JOGO), px(ALTURA_CABECALHO));
+    desenharTexto(g, L"BOMBERMAN", 0, 8, 29, Gdiplus::Color(255, 65, 210, 235), true);
+    wstring dados = L"Pontos: " + to_wstring(pontos) + L"    Inimigos: " + to_wstring(inimigosVivos());
+    if (modo == AUTOMATICO) dados += L"    AUTO 1,5x";
+    desenharTexto(g, dados, 18, 50, 18, Gdiplus::Color(255, 245, 245, 245));
+    wstring aviso = L"Espaco coloca uma bomba";
+    if (bomba.ativa && !bomba.explodindo)
+        aviso = L"Bomba explode em: " + to_wstring((bomba.tempoMs + 999) / 1000) + L"s";
+    else if (bomba.explodindo) aviso = L"BOOM! Afaste-se das chamas!";
+    desenharTexto(g, aviso, 18, 76, 15, Gdiplus::Color(255, 255, 210, 85));
+}
+
+void desenharRodape(Gdiplus::Graphics& g) {
+    int y = ALTURA_CABECALHO + LINHAS * TAMANHO_CELULA;
+    Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 20, 28, 38));
+    g.FillRectangle(&fundo, 0, px(y), px(LARGURA_JOGO), px(ALTURA_RODAPE));
+    desenharTexto(g, L"WASD/SETAS: mover   ESPACO: bomba   R: reiniciar   M: menu   Q/ESC: sair",
+                  12, y + 8, 15, Gdiplus::Color(255, 225, 230, 235), true);
+    if (estado == VITORIA)
+        desenharTexto(g, L"VOCE VENCEU! Pressione R.", 12, y + 37, 18,
+                      Gdiplus::Color(255, 90, 225, 120), true);
+    else if (estado == DERROTA)
+        desenharTexto(g, L"GAME OVER! Pressione R.", 12, y + 37, 18,
+                      Gdiplus::Color(255, 245, 85, 85), true);
+}
+
+void desenharMenu(Gdiplus::Graphics& g) {
+    Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 20, 28, 38));
+    g.FillRectangle(&fundo, 0, 0, px(LARGURA_JOGO), px(ALTURA_JOGO));
+    desenharTexto(g, L"BOMBERMAN", 20, 130, 42, Gdiplus::Color(255, 65, 210, 235), true);
+    desenharTexto(g, L"ESCOLHA O MODO DE JOGO", 20, 230, 21,
+                  Gdiplus::Color(255, 245, 245, 245), true);
+    desenharTexto(g, L"[1] Jogar manualmente", 20, 305, 24,
+                  Gdiplus::Color(255, 90, 225, 120), true);
+    desenharTexto(g, L"[2] Jogo automatico 1,5x", 20, 365, 24,
+                  Gdiplus::Color(255, 255, 210, 85), true);
+    desenharTexto(g, L"[Q ou ESC] Sair", 20, 445, 18,
+                  Gdiplus::Color(255, 205, 210, 215), true);
+}
+
+void desenhar(HWND janela) {
+    PAINTSTRUCT ps;
+    HDC destino = BeginPaint(janela, &ps);
+    RECT cliente;
+    GetClientRect(janela, &cliente);
+    HDC memoria = CreateCompatibleDC(destino);
+    HBITMAP bitmap = CreateCompatibleBitmap(destino, cliente.right, cliente.bottom);
+    HGDIOBJ anterior = SelectObject(memoria, bitmap);
+    Gdiplus::Graphics g(memoria);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    if (modo == MENU) desenharMenu(g);
+    else {
+        desenharHUD(g);
+        desenharMapa(g);
+        desenharRodape(g);
+    }
+    BitBlt(destino, 0, 0, cliente.right, cliente.bottom, memoria, 0, 0, SRCCOPY);
+    SelectObject(memoria, anterior);
+    DeleteObject(bitmap);
+    DeleteDC(memoria);
+    EndPaint(janela, &ps);
+}
+
+void lerTeclado(WPARAM tecla) {
     if (modo == MENU) {
         if (tecla == '1') iniciarPartida(MANUAL);
         else if (tecla == '2') iniciarPartida(AUTOMATICO);
-        else if (tecla == 'q' || tecla == 'Q' || tecla == 27) executando = false;
+        else if (tecla == 'Q' || tecla == VK_ESCAPE) DestroyWindow(janelaPrincipal);
         return;
     }
-    if (tecla == 0 || tecla == 224) {
-        int especial = _getch();
-        if (especial == 72) moverJogador(-1, 0);
-        else if (especial == 80) moverJogador(1, 0);
-        else if (especial == 75) moverJogador(0, -1);
-        else if (especial == 77) moverJogador(0, 1);
-        return;
-    }
-    if (tecla == 'm' || tecla == 'M') modo = MENU;
-    else if (tecla == 'w' || tecla == 'W') moverJogador(-1, 0);
-    else if (tecla == 's' || tecla == 'S') moverJogador(1, 0);
-    else if (tecla == 'a' || tecla == 'A') moverJogador(0, -1);
-    else if (tecla == 'd' || tecla == 'D') moverJogador(0, 1);
+    if (tecla == 'M') modo = MENU;
+    else if (tecla == 'W' || tecla == VK_UP) moverJogador(-1, 0);
+    else if (tecla == 'S' || tecla == VK_DOWN) moverJogador(1, 0);
+    else if (tecla == 'A' || tecla == VK_LEFT) moverJogador(0, -1);
+    else if (tecla == 'D' || tecla == VK_RIGHT) moverJogador(0, 1);
     else if (tecla == ' ') colocarBomba();
-    else if (tecla == 'r' || tecla == 'R') reiniciar();
-    else if (tecla == 'q' || tecla == 'Q' || tecla == 27) executando = false;
+    else if (tecla == 'R') reiniciar();
+    else if (tecla == 'Q' || tecla == VK_ESCAPE) DestroyWindow(janelaPrincipal);
 }
 
-void prepararConsole() {
-    // Configuracao visual do console.
-    CONSOLE_FONT_INFOEX fonte{};
-    fonte.cbSize = sizeof(CONSOLE_FONT_INFOEX);
-    fonte.dwFontSize.X = 0;
-    fonte.dwFontSize.Y = 28;
-    fonte.FontFamily = FF_DONTCARE;
-    fonte.FontWeight = FW_NORMAL;
-    wcscpy_s(fonte.FaceName, L"Consolas");
-    SetCurrentConsoleFontEx(console, FALSE, &fonte);
-
-    COORD tamanhoBuffer{38, 24};
-    SetConsoleScreenBufferSize(console, tamanhoBuffer);
-    SMALL_RECT tamanhoJanela{0, 0, 37, 23};
-    SetConsoleWindowInfo(console, TRUE, &tamanhoJanela);
-
-    CONSOLE_CURSOR_INFO cursor;
-    GetConsoleCursorInfo(console, &cursor);
-    cursor.bVisible = FALSE;
-    SetConsoleCursorInfo(console, &cursor);
-    SetConsoleTitleA("Bomberman Console - sem GLUT");
-    system("cls");
+void atualizarEscalaDpi(HWND janela) {
+    escalaDpi = GetDpiForWindow(janela) / 96.0f;
 }
 
-int main() {
-    prepararConsole();
-    auto ultimoInstante = chrono::steady_clock::now();
-
-    while (executando) {
+LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LPARAM lParam) {
+    static auto ultimoInstante = chrono::steady_clock::now();
+    switch (mensagem) {
+    case WM_CREATE:
+        janelaPrincipal = janela;
+        atualizarEscalaDpi(janela);
+        carregarAssets();
+        SetTimer(janela, 1, PASSO_LOGICA_MS, nullptr);
+        return 0;
+    case WM_TIMER: {
         auto agora = chrono::steady_clock::now();
         int decorrido = static_cast<int>(chrono::duration_cast<chrono::milliseconds>(agora - ultimoInstante).count());
-        if (decorrido >= PASSO_LOGICA_MS) {
-            ultimoInstante = agora;
-            lerTeclado();
-            double multiplicador = modo == AUTOMATICO ? 1.5 : 1.0;
-            atualizar(static_cast<int>(min(decorrido, 100) * multiplicador));
-            desenhar();
-        }
-        this_thread::sleep_for(chrono::milliseconds(2));
+        ultimoInstante = agora;
+        double multiplicador = modo == AUTOMATICO ? 1.5 : 1.0;
+        atualizar(static_cast<int>(min(decorrido, 100) * multiplicador));
+        InvalidateRect(janela, nullptr, FALSE);
+        return 0;
     }
+    case WM_KEYDOWN:
+        lerTeclado(wParam);
+        InvalidateRect(janela, nullptr, FALSE);
+        return 0;
+    case WM_PAINT:
+        desenhar(janela);
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_DPICHANGED: {
+        RECT* sugerido = reinterpret_cast<RECT*>(lParam);
+        SetWindowPos(janela, nullptr, sugerido->left, sugerido->top,
+                     sugerido->right - sugerido->left, sugerido->bottom - sugerido->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        atualizarEscalaDpi(janela);
+        return 0;
+    }
+    case WM_DESTROY:
+        executando = false;
+        KillTimer(janela, 1);
+        liberarAssets();
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(janela, mensagem, wParam, lParam);
+}
 
-    cor(7);
-    posicionarCursor(0, 23);
-    cout << "Jogo encerrado.                         \n";
+void tornarAplicacaoDpiAware() {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+}
+
+int WINAPI WinMain(HINSTANCE instancia, HINSTANCE, LPSTR, int exibir) {
+    tornarAplicacaoDpiAware();
+    escalaDpi = GetDpiForSystem() / 96.0f;
+    Gdiplus::GdiplusStartupInput entradaGdiPlus;
+    if (Gdiplus::GdiplusStartup(&tokenGdiPlus, &entradaGdiPlus, nullptr) != Gdiplus::Ok) return 1;
+
+    const wchar_t CLASSE[] = L"BombermanUnivali";
+    WNDCLASSW classe{};
+    classe.lpfnWndProc = processarMensagem;
+    classe.hInstance = instancia;
+    classe.lpszClassName = CLASSE;
+    classe.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    classe.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    RegisterClassW(&classe);
+
+    RECT area{0, 0, px(LARGURA_JOGO), px(ALTURA_JOGO)};
+    AdjustWindowRect(&area, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
+    HWND janela = CreateWindowExW(0, CLASSE, L"Bomberman - Algoritmos e Programacao II",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT, area.right - area.left, area.bottom - area.top,
+        nullptr, nullptr, instancia, nullptr);
+    if (!janela) {
+        Gdiplus::GdiplusShutdown(tokenGdiPlus);
+        return 1;
+    }
+    ShowWindow(janela, exibir);
+    UpdateWindow(janela);
+
+    MSG mensagem;
+    while (GetMessageW(&mensagem, nullptr, 0, 0) > 0) {
+        TranslateMessage(&mensagem);
+        DispatchMessageW(&mensagem);
+    }
+    Gdiplus::GdiplusShutdown(tokenGdiPlus);
     return 0;
 }
