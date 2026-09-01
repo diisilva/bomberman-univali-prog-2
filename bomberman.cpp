@@ -1,6 +1,6 @@
 /*
-Bomberman para console - Trabalho M1 (sem GLUT)
-Desenvolvedores: PREENCHER COM OS NOMES DA EQUIPE
+Algoritmos e programação II, Trabalho M1
+Desenvolvedores: Diego Silva |  Gabriel Bianchessi
 
 Feito com matriz, structs, vetores e sub-rotinas. As funcoes de console do
 Windows servem somente para ler teclas sem Enter, colorir e redesenhar a tela.
@@ -489,8 +489,8 @@ int main() {
         if (decorrido >= PASSO_LOGICA_MS) {
             ultimoInstante = agora;
             lerTeclado();
-            int multiplicador = modo == AUTOMATICO ? 2 : 1;
-            atualizar(min(decorrido, 100) * multiplicador);
+            double multiplicador = modo == AUTOMATICO ? 1.5 : 1.0;
+            atualizar(static_cast<int>(min(decorrido, 100) * multiplicador));
             desenhar();
         }
         this_thread::sleep_for(chrono::milliseconds(2));
