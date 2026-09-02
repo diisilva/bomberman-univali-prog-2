@@ -4,6 +4,8 @@ Trabalho M1 da disciplina de Algoritmos e Programação II da UNIVALI, desenvolv
 
 O jogo usa uma janela nativa do Windows. A lógica continua em C++ com matriz, structs, vetores e sub-rotinas; a apresentação usa Win32, GDI e GDI+ para desenhar o mapa e os sprites PNG com transparência.
 
+Esta raiz contém a **versão moderna**. Uma segunda build com aparência clássica ampliada está disponível em [`legado/`](legado/README.md). As duas usam a mesma lógica e os mesmos assets, mas possuem fontes de entrada, scripts de compilação, executáveis e documentos próprios.
+
 ## Tecnologias da interface gráfica
 
 O projeto não utiliza motor gráfico. Unity, Unreal, Godot, GLUT, SDL e SFML não fazem parte da aplicação. A interface foi construída diretamente com recursos nativos do Windows, divididos em três responsabilidades.
@@ -151,6 +153,10 @@ No modo automático, o jogador usa busca em largura para procurar inimigos e par
 - `bomberman.cpp`: fonte oficial do jogo;
 - `assets/`: sprites PNG;
 - `compilar.ps1`: compilação reproduzível;
+- `DEFESA.md`: documento oficial de defesa da versão moderna;
+- `legado/bomberman_legado.cpp`: entrada da edição clássica;
+- `legado/compilar_legado.ps1`: build separada da edição clássica;
+- `legado/README.md` e `legado/DEFESA.md`: documentação oficial da edição clássica;
 - `bomberman_defesa_comentado.cpp`: guia compilável de leitura do fonte;
 - `ROTEIRO_DEFESA.md`: roteiro para a apresentação acadêmica;
 - `README.md`: instruções do projeto.

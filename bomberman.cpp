@@ -33,7 +33,11 @@ const int INTERVALO_MOVIMENTO_MS = 105;
 const int ALCANCE_EXPLOSAO = 2;
 const int PASSO_LOGICA_MS = 25;
 const int INTERVALO_BOT_MS = 170;
+#ifdef VERSAO_LEGADO
+const int TAMANHO_CELULA = 56;
+#else
 const int TAMANHO_CELULA = 52;
+#endif
 const int ALTURA_CABECALHO = 104;
 const int ALTURA_RODAPE = 72;
 const int LARGURA_JOGO = COLUNAS * TAMANHO_CELULA;
@@ -388,7 +392,12 @@ unique_ptr<Gdiplus::Image> carregarSprite(const wstring& nome) {
     wstring caminho = pastaDoExecutavel() + L"\\assets\\" + nome;
     auto imagem = make_unique<Gdiplus::Image>(caminho.c_str());
     if (imagem->GetLastStatus() == Gdiplus::Ok) return imagem;
-    wstring mensagem = L"Nao foi possivel carregar o asset:\n" + caminho +
+    // A build legada fica em uma subpasta e compartilha os assets da raiz.
+    wstring caminhoCompartilhado = pastaDoExecutavel() + L"\\..\\assets\\" + nome;
+    imagem = make_unique<Gdiplus::Image>(caminhoCompartilhado.c_str());
+    if (imagem->GetLastStatus() == Gdiplus::Ok) return imagem;
+    wstring mensagem = L"Nao foi possivel carregar o asset:\n" + caminho + L"\nNem em:\n" +
+                       caminhoCompartilhado +
                        L"\n\nO jogo usara uma representacao textual.";
     MessageBoxW(janelaPrincipal, mensagem.c_str(), L"Asset nao encontrado", MB_OK | MB_ICONWARNING);
     return nullptr;
@@ -408,7 +417,12 @@ void liberarAssets() {
 
 void desenharTexto(Gdiplus::Graphics& g, const wstring& texto, float x, float y,
                    float tamanho, Gdiplus::Color cor, bool centralizado = false) {
-    Gdiplus::Font fonte(L"Segoe UI", px(static_cast<int>(tamanho)), Gdiplus::FontStyleRegular,
+#ifdef VERSAO_LEGADO
+    const wchar_t* nomeFonte = L"Consolas";
+#else
+    const wchar_t* nomeFonte = L"Segoe UI";
+#endif
+    Gdiplus::Font fonte(nomeFonte, px(static_cast<int>(tamanho)), Gdiplus::FontStyleRegular,
                        Gdiplus::UnitPixel);
     Gdiplus::SolidBrush pincel(cor);
     Gdiplus::StringFormat formato;
@@ -444,9 +458,15 @@ void desenharCelula(Gdiplus::Graphics& g, int l, int c) {
     int x = px(c * TAMANHO_CELULA);
     int y = px(ALTURA_CABECALHO + l * TAMANHO_CELULA);
     int lado = px(TAMANHO_CELULA);
+#ifdef VERSAO_LEGADO
+    Gdiplus::Color cor = mapa[l][c] == PAREDE_SOLIDA ? Gdiplus::Color(255, 128, 128, 128) :
+                         mapa[l][c] == PAREDE_FRAGIL ? Gdiplus::Color(255, 0, 70, 180) :
+                                                      Gdiplus::Color(255, 0, 128, 0);
+#else
     Gdiplus::Color cor = mapa[l][c] == PAREDE_SOLIDA ? Gdiplus::Color(255, 105, 110, 115) :
                          mapa[l][c] == PAREDE_FRAGIL ? Gdiplus::Color(255, 45, 105, 180) :
                                                       Gdiplus::Color(255, 38, 128, 67);
+#endif
     if (naExplosao({l, c})) cor = Gdiplus::Color(255, 255, 158, 35);
     Gdiplus::SolidBrush fundo(cor);
     g.FillRectangle(&fundo, x, y, lado, lado);
@@ -469,9 +489,18 @@ void desenharMapa(Gdiplus::Graphics& g) {
 }
 
 void desenharHUD(Gdiplus::Graphics& g) {
+#ifdef VERSAO_LEGADO
+    Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 0, 0, 0));
+#else
     Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 20, 28, 38));
+#endif
     g.FillRectangle(&fundo, 0, 0, px(LARGURA_JOGO), px(ALTURA_CABECALHO));
+#ifdef VERSAO_LEGADO
+    desenharTexto(g, L"+--------- BOMBERMAN LEGADO ---------+", 0, 8, 24,
+                  Gdiplus::Color(255, 0, 220, 235), true);
+#else
     desenharTexto(g, L"BOMBERMAN", 0, 8, 29, Gdiplus::Color(255, 65, 210, 235), true);
+#endif
     wstring dados = L"Pontos: " + to_wstring(pontos) + L"    Inimigos: " + to_wstring(inimigosVivos());
     if (modo == AUTOMATICO) dados += L"    AUTO 1,5x";
     desenharTexto(g, dados, 18, 50, 18, Gdiplus::Color(255, 245, 245, 245));
@@ -484,7 +513,11 @@ void desenharHUD(Gdiplus::Graphics& g) {
 
 void desenharRodape(Gdiplus::Graphics& g) {
     int y = ALTURA_CABECALHO + LINHAS * TAMANHO_CELULA;
+#ifdef VERSAO_LEGADO
+    Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 0, 0, 0));
+#else
     Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 20, 28, 38));
+#endif
     g.FillRectangle(&fundo, 0, px(y), px(LARGURA_JOGO), px(ALTURA_RODAPE));
     desenharTexto(g, L"WASD/SETAS: mover   ESPACO: bomba   R: reiniciar   M: menu   Q/ESC: sair",
                   12, y + 8, 15, Gdiplus::Color(255, 225, 230, 235), true);
@@ -497,9 +530,22 @@ void desenharRodape(Gdiplus::Graphics& g) {
 }
 
 void desenharMenu(Gdiplus::Graphics& g) {
+#ifdef VERSAO_LEGADO
+    Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 0, 0, 0));
+#else
     Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 20, 28, 38));
+#endif
     g.FillRectangle(&fundo, 0, 0, px(LARGURA_JOGO), px(ALTURA_JOGO));
+#ifdef VERSAO_LEGADO
+    desenharTexto(g, L"+----------------------------------+", 20, 85, 26,
+                  Gdiplus::Color(255, 0, 220, 235), true);
+    desenharTexto(g, L"|       BOMBERMAN LEGADO          |", 20, 130, 30,
+                  Gdiplus::Color(255, 0, 220, 235), true);
+    desenharTexto(g, L"+----------------------------------+", 20, 180, 26,
+                  Gdiplus::Color(255, 0, 220, 235), true);
+#else
     desenharTexto(g, L"BOMBERMAN", 20, 130, 42, Gdiplus::Color(255, 65, 210, 235), true);
+#endif
     desenharTexto(g, L"ESCOLHA O MODO DE JOGO", 20, 230, 21,
                   Gdiplus::Color(255, 245, 245, 245), true);
     desenharTexto(g, L"[1] Jogar manualmente", 20, 305, 24,
@@ -609,7 +655,13 @@ int WINAPI WinMain(HINSTANCE instancia, HINSTANCE, LPSTR, int exibir) {
     Gdiplus::GdiplusStartupInput entradaGdiPlus;
     if (Gdiplus::GdiplusStartup(&tokenGdiPlus, &entradaGdiPlus, nullptr) != Gdiplus::Ok) return 1;
 
+#ifdef VERSAO_LEGADO
+    const wchar_t CLASSE[] = L"BombermanUnivaliLegado";
+    const wchar_t TITULO[] = L"Bomberman Legado - Algoritmos e Programacao II";
+#else
     const wchar_t CLASSE[] = L"BombermanUnivali";
+    const wchar_t TITULO[] = L"Bomberman - Algoritmos e Programacao II";
+#endif
     WNDCLASSW classe{};
     classe.lpfnWndProc = processarMensagem;
     classe.hInstance = instancia;
@@ -620,7 +672,7 @@ int WINAPI WinMain(HINSTANCE instancia, HINSTANCE, LPSTR, int exibir) {
 
     RECT area{0, 0, px(LARGURA_JOGO), px(ALTURA_JOGO)};
     AdjustWindowRect(&area, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
-    HWND janela = CreateWindowExW(0, CLASSE, L"Bomberman - Algoritmos e Programacao II",
+    HWND janela = CreateWindowExW(0, CLASSE, TITULO,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, area.right - area.left, area.bottom - area.top,
         nullptr, nullptr, instancia, nullptr);
