@@ -1,13 +1,70 @@
-/*
-Algoritmos e programação II, Trabalho M1
-Desenvolvedores: Diego Silva |  Gabriel Bianchessi
+/* ===========================================================================
+   BOMBERMAN, Trabalho M1 de Algoritmos e Programacao II (22817)
+   Universidade do Vale do Itajai, Escola Politecnica
+   Curso de Ciencia da Computacao
 
-Feito com matriz, structs, vetores e sub-rotinas. A interface usa Win32 e
-GDI+ para abrir uma janela propria e desenhar os sprites PNG.
+   [PDF - TECNICA 1] "Identificacao dos desenvolvedores e comentarios
+   pertinentes no codigo."
 
-WASD/setas: mover | Espaco: bomba | R: reiniciar | Q ou ESC: sair
-*/
+   Desenvolvedores: Diego Silva | Gabriel Bianchessi
 
+   COMO O ARQUIVO ESTA ORGANIZADO
+   Cada bloco abaixo tem um cabecalho dizendo (a) o que ele faz, (b) qual
+   biblioteca ele usa e (c) qual item da grade de avaliacao do PDF ele atende.
+   As marcacoes seguem este padrao:
+
+       [PDF - FUNCIONALIDADE n]  -> um dos 15 itens de "FUNCIONALIDADES"
+       [PDF - TECNICA n]         -> um dos 4 itens de "TECNICAS"
+
+   A divisao geral do arquivo e:
+       1) Bibliotecas usadas
+       2) Constantes de regra e de tela
+       3) Tipos (enums e structs) e estado do jogo
+       4) Consultas basicas sobre o tabuleiro
+       5) Geracao do cenario
+       6) Jogador (movimento, bombas, cartas)
+       7) Bombas (contagem, explosao, dano)
+       8) Inimigos (caminhada aleatoria e perseguicao)
+       9) Vitoria e derrota
+      10) Modo automatico (bot)
+      11) Atualizacao geral da logica
+      12) Camada grafica (Win32 + GDI + GDI+)
+      13) Janela, teclado e ponto de entrada
+
+   CONTROLES
+       WASD/setas .... mover        Espaco ... colocar bomba
+       T ............. teletransportar (precisa da carta)
+       R ............. reiniciar     M ....... voltar ao menu
+       Q ou ESC ...... sair
+
+   CARTAS ESPECIAIS (extra nosso, nao pedido no enunciado)
+   Dois blocos dourados escondem cartas. Ao quebra-los com uma bomba, a carta
+   cai no chao e basta pisar em cima:
+       DUAS BOMBAS .. passa a permitir duas bombas no cenario ao mesmo tempo,
+                      pelo resto da partida;
+       TELEPORTE .... teletransporta o jogador uma vez, com a tecla T.
+   =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   1) BIBLIOTECAS USADAS
+
+   Bibliotecas do Windows (fazem parte do sistema, nao sao motor grafico):
+     <windows.h>  Win32 API: cria a janela, recebe o teclado, dispara o timer
+                  e entrega as mensagens do sistema. Tambem traz o GDI, que
+                  fornece o bitmap de memoria usado no buffer duplo.
+     <gdiplus.h>  GDI+: carrega arquivos PNG com transparencia (canal alpha) e
+                  desenha imagem e texto com qualidade. O GDI puro nao le PNG.
+
+   Bibliotecas padrao do C++ (conteudo da disciplina):
+     <algorithm>  min, max, shuffle e fill.
+     <chrono>     relogio de alta precisao para medir o tempo entre quadros.
+     <memory>     unique_ptr, que libera a memoria das imagens sozinho.
+     <queue>      fila usada na busca em largura (BFS) do bot e dos inimigos.
+     <random>     mt19937 e uniform_int_distribution para todo sorteio do jogo.
+     <string>     wstring, o texto em formato wide usado pelo Windows.
+     <unordered_map> tabela usada para reaproveitar fontes ja criadas.
+     <vector>     vetores de inimigos, de bombas, de celulas e de itens.
+   --------------------------------------------------------------------------- */
 #include <windows.h>
 #include <gdiplus.h>
 #include <algorithm>
@@ -25,335 +82,599 @@ WASD/setas: mover | Espaco: bomba | R: reiniciar | Q ou ESC: sair
 
 using namespace std;
 
-const int LINHAS = 13;
-const int COLUNAS = 15;
-const int TEMPO_BOMBA_MS = 2200;
-const int TEMPO_EXPLOSAO_MS = 650;
-const int INTERVALO_MOVIMENTO_MS = 105;
-const int ALCANCE_EXPLOSAO_INICIAL = 1;
-const int ALCANCE_EXPLOSAO_MAXIMO = 3;
-const int PASSO_LOGICA_MS = 25;
-const int INTERVALO_INIMIGO_MIN_MS = 350;
-const int INTERVALO_INIMIGO_MAX_MS = 700;
-const int DISTANCIA_PERSEGUICAO = 6;
-const int CHANCE_PERSEGUICAO = 65;
-const int ALCANCE_CHUTE = 4;
-const int TOTAL_INIMIGOS_INICIAL = 6;
-#ifdef VERSAO_LEGADO
-const int TAMANHO_CELULA = 56;
-#else
-const int TAMANHO_CELULA = 52;
-#endif
-const int ALTURA_CABECALHO = 104;
-const int ALTURA_RODAPE = 72;
+/* ---------------------------------------------------------------------------
+   2) CONSTANTES DE REGRA
+
+   Todo numero que define o comportamento do jogo fica aqui em cima, com nome.
+   Assim, mudar o ritmo do jogo e trocar uma constante, sem cacar numero solto
+   no meio do codigo. Isso atende o pedido do PDF de "produzam todo o codigo
+   pensando na possibilidade de que novas funcionalidades poderao ser
+   solicitadas no futuro".
+   --------------------------------------------------------------------------- */
+const int LINHAS = 15;                      // altura do tabuleiro em celulas
+const int COLUNAS = 19;                     // largura do tabuleiro em celulas
+const int TOTAL_INIMIGOS_INICIAL = 7;       // quantos inimigos nascem na partida
+const int TEMPO_BOMBA_MS = 2200;            // tempo entre plantar e explodir
+const int TEMPO_EXPLOSAO_MS = 650;          // quanto tempo as chamas ficam na tela
+const int INTERVALO_MOVIMENTO_MS = 105;     // espera entre dois passos do jogador
+const int ALCANCE_EXPLOSAO_INICIAL = 1;     // raio da explosao no comeco
+const int ALCANCE_EXPLOSAO_MAXIMO = 3;      // raio maximo que a bomba alcanca
+const int PASSO_LOGICA_MS = 25;             // periodo do timer que atualiza a logica
+const int PONTOS_POR_INIMIGO = 100;         // pontuacao ganha por inimigo derrotado
+
+// [PDF - BOMBA] "Apenas uma bomba podera estar presente no cenario do jogo."
+// O limite comeca em 1, como o enunciado exige. A carta DUAS_BOMBAS (extra
+// nosso) sobe esse limite para 2 pelo resto da partida.
+const int MAX_BOMBAS_INICIAL = 1;
+const int MAX_BOMBAS_COM_CARTA = 2;
+
+// Ritmo dos inimigos. A caminhada de 1 a 3 quadrados exigida pelo PDF acontece
+// UM QUADRADO POR VEZ, separada por INTERVALO_PASSO_INIMIGO_MS. Se os tres
+// quadrados fossem aplicados no mesmo instante, o inimigo sumiria de um ponto e
+// apareceria no outro (efeito de teletransporte) em vez de caminhar.
+const int INTERVALO_PASSO_INIMIGO_MS = 150; // tempo entre dois quadrados da mesma caminhada
+const int PAUSA_INIMIGO_MIN_MS = 500;       // pausa minima entre uma caminhada e a proxima
+const int PAUSA_INIMIGO_MAX_MS = 900;       // pausa maxima entre uma caminhada e a proxima
+const int PASSOS_INIMIGO_MIN = 1;           // "1, 2 ou 3 quadrados" do enunciado
+const int PASSOS_INIMIGO_MAX = 3;
+const int DISTANCIA_PERSEGUICAO = 5;        // a partir de que distancia o inimigo pode perseguir
+const int CHANCE_PERSEGUICAO = 45;          // chance (%) de perseguir em vez de andar ao acaso
+const int CHANCE_PAREDE_FRAGIL = 36;        // chance (%) de uma celula livre virar parede fragil
+const int TOTAL_BLOCOS_BONUS = 2;           // quantos blocos escondem cartas especiais
+
+/* ---------------------------------------------------------------------------
+   CONSTANTES DE TELA
+
+   Medidas em "unidades base" (como se a tela estivesse em 100% de escala). A
+   funcao px() converte essas unidades para pixels reais conforme a escala
+   escolhida em ajustarEscalaParaCaberNaTela(), que leva em conta o DPI do
+   monitor E o espaco realmente disponivel na tela.
+   --------------------------------------------------------------------------- */
+const int TAMANHO_CELULA = 52;              // lado de cada quadrado do tabuleiro
+const int ALTURA_CABECALHO = 104;           // faixa superior com titulo e placar
+const int ALTURA_RODAPE = 90;               // faixa inferior com controles e regras das cartas
 const int LARGURA_JOGO = COLUNAS * TAMANHO_CELULA;
 const int ALTURA_JOGO = ALTURA_CABECALHO + LINHAS * TAMANHO_CELULA + ALTURA_RODAPE;
+const float ESCALA_MINIMA = 0.45f;          // piso de legibilidade em telas muito pequenas
 
-enum TipoCelula { VAZIO, PAREDE_SOLIDA, PAREDE_FRAGIL, PAREDE_BONUS };
-enum EstadoJogo { JOGANDO, VITORIA, DERROTA };
-enum ModoJogo { MENU, MANUAL, AUTOMATICO };
-enum TipoItem { CHUTE, TELEPORTE };
+/* ---------------------------------------------------------------------------
+   3) TIPOS DO JOGO
 
-struct Posicao { int linha, coluna; };
-struct Inimigo { Posicao posicao; bool vivo; int tempoProximoMovimentoMs; };
-struct Bomba {
-    Posicao posicao{0, 0};
-    bool ativa = false;
-    bool explodindo = false;
-    int tempoMs = 0;
+   enum: da nome a valores que so podem ser um de uma lista fechada, no lugar de
+   numeros soltos (0, 1, 2...). struct: agrupa dados que andam juntos.
+
+   [PDF - TECNICA 4] "Subrotinas: boa segmentacao e emprego das tecnicas": structs
+   e enums mantem os dados organizados por entidade.
+   --------------------------------------------------------------------------- */
+
+// O que pode existir em uma celula do tabuleiro.
+// [PDF - PAREDES] "O cenario do jogo devera ser composto por paredes solidas e
+// por paredes frageis."
+enum TipoCelula {
+    VAZIO,          // chao livre: da para andar
+    PAREDE_SOLIDA,  // cinza: bloqueia e NAO pode ser destruida
+    PAREDE_FRAGIL,  // azul: bloqueia mas a bomba destroi
+    PAREDE_BONUS    // parede fragil especial: ao quebrar, solta uma carta
 };
-struct Item { Posicao posicao; TipoItem tipo; };
-struct BlocoBonus { Posicao posicao; TipoItem tipo; };
 
+enum EstadoJogo { JOGANDO, VITORIA, DERROTA };  // situacao atual da partida
+enum ModoJogo { MENU, MANUAL, AUTOMATICO };     // tela de menu, jogador humano ou bot
+enum TipoItem { DUAS_BOMBAS, TELEPORTE };       // cartas especiais que os blocos bonus soltam
+
+// Uma coordenada do tabuleiro. Usar uma struct evita ficar carregando duas
+// variaveis soltas (linha e coluna) em todo lugar.
+struct Posicao { int linha, coluna; };
+
+// Um inimigo. Alem da posicao, cada um carrega o proprio relogio e a propria
+// caminhada, para que eles nao andem todos juntos no mesmo instante.
+struct Inimigo {
+    Posicao posicao;            // onde ele esta no tabuleiro
+    bool vivo;                  // false depois de ser atingido pela explosao
+    int tempoProximoPassoMs;    // quanto falta (ms) para o proximo quadrado
+    int passosRestantes;        // quadrados que ainda faltam na caminhada atual
+    Posicao direcao;            // direcao sorteada para a caminhada atual
+    bool perseguindo;           // true = segue o jogador; false = anda ao acaso
+};
+
+// Uma bomba plantada. Estar dentro do vetor `bombas` ja significa que ela
+// existe no cenario, entao nao ha campo "ativa": quem some do vetor, acabou.
+struct Bomba {
+    Posicao posicao{0, 0};      // onde ela foi plantada
+    bool explodindo = false;    // false = pavio queimando; true = chamas na tela
+    int tempoMs = 0;            // contagem regressiva da fase atual
+    vector<Posicao> celulas;    // celulas em chamas desta bomba (calculadas na explosao)
+};
+
+struct Item { Posicao posicao; TipoItem tipo; };        // carta caida no chao
+struct BlocoBonus { Posicao posicao; TipoItem tipo; };  // carta ainda escondida na parede
+
+/* ---------------------------------------------------------------------------
+   ESTADO DO JOGO (variaveis globais)
+
+   Sao globais porque a Win32 chama nossas funcoes atraves de um callback
+   (processarMensagem) que nao permite carregar o estado do jogo como
+   parametro. As sub-rotinas de regra, porem, recebem por parametro/referencia
+   aquilo em que trabalham, conforme a TECNICA 3 mais abaixo.
+   --------------------------------------------------------------------------- */
+
+// [PDF - TECNICA 4] O cenario e uma MATRIZ FIXA, conteudo da disciplina.
 TipoCelula mapa[LINHAS][COLUNAS];
-Posicao jogador{1, 1};
-Posicao direcaoJogador{0, 1};
-vector<Inimigo> inimigos;
-vector<Posicao> areaExplosao;
-vector<BlocoBonus> blocosBonus;
-vector<Item> itensNoChao;
-Bomba bomba;
+
+Posicao jogador{1, 1};              // posicao atual do protagonista
+vector<Inimigo> inimigos;           // VETOR de inimigos
+vector<Bomba> bombas;               // VETOR de bombas no cenario (0, 1 ou 2)
+vector<Posicao> areaExplosao;       // VETOR com as celulas atingidas pelas explosoes
+vector<BlocoBonus> blocosBonus;     // cartas ainda escondidas dentro de paredes
+vector<Item> itensNoChao;           // cartas ja liberadas, esperando o jogador
 EstadoJogo estado = JOGANDO;
 ModoJogo modo = MENU;
 int pontos = 0;
 int alcanceExplosao = ALCANCE_EXPLOSAO_INICIAL;
-int tempoMovimentoMs = 0;
-bool executando = true;
-bool possuiCartaChute = false;
-bool possuiCartaTeleporte = false;
-bool teclaPressionada[256]{};
-mt19937 gerador(random_device{}());
-HWND janelaPrincipal = nullptr;
-ULONG_PTR tokenGdiPlus = 0;
-unique_ptr<Gdiplus::Image> spriteJogador;
-unique_ptr<Gdiplus::Image> spriteInimigo;
-unique_ptr<Gdiplus::Image> spriteBomba;
-float escalaDpi = 1.0f;
+int maxBombas = MAX_BOMBAS_INICIAL; // quantas bombas cabem no cenario ao mesmo tempo
+bool possuiCartaTeleporte = false;  // o jogador tem a carta de teleporte guardada?
+int tempoMovimentoMs = 0;           // trava que impede o jogador de andar rapido demais
+bool teclaPressionada[256]{};       // estado de cada tecla, lido a cada tick
+mt19937 gerador(random_device{}()); // gerador de numeros aleatorios (biblioteca <random>)
 
-// Backbuffer reaproveitado entre frames: recriar HDC/HBITMAP a cada WM_PAINT
-// (antes: uma vez por frame a ~40fps) custava CPU real por nada, ja que o
-// tamanho da janela quase nunca muda.
-HDC bufferDC = nullptr;
-HBITMAP bufferBitmap = nullptr;
+/* ---------------------------------------------------------------------------
+   ESTADO DA CAMADA GRAFICA
+
+   Nada aqui altera regra de jogo: sao apenas recursos do Windows guardados
+   para nao serem recriados a cada quadro. Recriar bitmap, fonte e imagem
+   redimensionada 40 vezes por segundo consumia quase um nucleo inteiro de CPU
+   e fazia o teclado atrasar, porque a mesma thread que desenha e a que le o
+   teclado.
+   --------------------------------------------------------------------------- */
+HWND janelaPrincipal = nullptr;     // identificador da janela (Win32)
+ULONG_PTR tokenGdiPlus = 0;         // sessao aberta do GDI+
+float escalaDpi = 1.0f;             // 1.0 = 100%, 1.5 = 150% etc.
+
+unique_ptr<Gdiplus::Image> spriteJogador;     // PNG original do jogador (GDI+)
+unique_ptr<Gdiplus::Image> spriteInimigo;     // PNG original do inimigo
+unique_ptr<Gdiplus::Image> spriteBomba;       // PNG original da bomba
+unique_ptr<Gdiplus::Image> spriteDuasBombas;  // PNG da carta "duas bombas"
+unique_ptr<Gdiplus::Image> spriteTeleporte;   // PNG da carta de teleporte
+
+HDC bufferDC = nullptr;             // contexto de memoria do buffer duplo (GDI)
+HBITMAP bufferBitmap = nullptr;     // bitmap onde o quadro e montado (GDI)
 int bufferLargura = 0;
 int bufferAltura = 0;
 
-// Fontes GDI+ tambem sao caras de criar; cachear por tamanho em pixels evita
-// recriar uma Font a cada chamada de desenharTexto (varias por frame).
-unordered_map<int, unique_ptr<Gdiplus::Font>> cacheFontes;
-
-// Bitmap com o terreno do tabuleiro (paredes/chao) ja desenhado; so e
-// reconstruido quando o mapa muda de verdade (reiniciar ou parede destruida).
-unique_ptr<Gdiplus::Bitmap> cacheMapa;
-bool cacheMapaSujo = true;
-
-// Versoes pre-redimensionadas dos sprites, no tamanho final de tela (ver
-// prepararSpriteEscalado). Evita reamostrar a imagem original a cada frame.
-unique_ptr<Gdiplus::Bitmap> cacheSpriteJogador;
+unordered_map<int, unique_ptr<Gdiplus::Font>> cacheFontes;  // fontes por tamanho
+unique_ptr<Gdiplus::Bitmap> cacheMapa;      // terreno ja desenhado
+bool cacheMapaSujo = true;                  // true = precisa redesenhar o terreno
+unique_ptr<Gdiplus::Bitmap> cacheSpriteJogador;  // PNG ja reduzido ao tamanho da celula
 unique_ptr<Gdiplus::Bitmap> cacheSpriteInimigo;
 unique_ptr<Gdiplus::Bitmap> cacheSpriteBomba;
+unique_ptr<Gdiplus::Bitmap> cacheSpriteDuasBombas;
+unique_ptr<Gdiplus::Bitmap> cacheSpriteTeleporte;
 
+// Marca que o terreno precisa ser redesenhado (chamada quando uma parede cai).
 void invalidarCacheMapa() { cacheMapaSujo = true; }
 
+/* ---------------------------------------------------------------------------
+   4) CONSULTAS BASICAS SOBRE O TABULEIRO
+
+   Sub-rotinas curtas que respondem "sim ou nao" e sao reusadas por todo o
+   resto do arquivo.
+
+   [PDF - TECNICA 3] "Subrotinas: parametros e referencia corretos."
+   A escolha de cada passagem segue um criterio:
+     - int e Posicao vao POR VALOR: sao pequenos e a funcao nao precisa altera-los;
+     - a matriz e os vetores vao POR REFERENCIA com const: assim nao e feita
+       uma copia do tabuleiro/vetor inteiro a cada chamada, e o const garante
+       que a funcao so le, nunca escreve.
+   --------------------------------------------------------------------------- */
+
+// Duas posicoes sao a mesma celula?
 bool iguais(Posicao a, Posicao b) {
     return a.linha == b.linha && a.coluna == b.coluna;
 }
 
+// A coordenada existe dentro da matriz? Protege contra acesso fora do vetor.
 bool dentro(int linha, int coluna) {
     return linha >= 0 && linha < LINHAS && coluna >= 0 && coluna < COLUNAS;
 }
 
-bool livre(int linha, int coluna) {
-    return dentro(linha, coluna) && mapa[linha][coluna] == VAZIO;
+// [PDF - FUNCIONALIDADE 3] "O jogador e bloqueado por qualquer tipo de parede."
+// [PDF - PAREDES] "Todas as paredes deverao impedir a passagem do jogador e dos inimigos."
+// Esta e a unica regra de colisao com parede do jogo: so a celula VAZIO e
+// caminhavel. PAREDE_SOLIDA, PAREDE_FRAGIL e PAREDE_BONUS bloqueiam igual.
+//
+// [PDF - FUNCIONALIDADE 2] "O jogador consegue se mover em uma area com bomba."
+// A funcao olha SOMENTE a matriz do cenario. A bomba nao esta na matriz (esta
+// no vetor `bombas`), entao ela nao aparece aqui e por isso nao impede a
+// passagem do jogador.
+bool livre(const TipoCelula cenario[][COLUNAS], int linha, int coluna) {
+    return dentro(linha, coluna) && cenario[linha][coluna] == VAZIO;
 }
 
-bool temInimigo(Posicao p, int ignorar = -1) {
-    for (int i = 0; i < static_cast<int>(inimigos.size()); i++) {
-        if (i != ignorar && inimigos[i].vivo && iguais(inimigos[i].posicao, p)) return true;
+// Existe algum inimigo vivo nesta celula? O parametro "ignorar" serve para um
+// inimigo nao se enxergar a si mesmo ao testar para onde pode andar.
+bool temInimigo(const vector<Inimigo>& lista, Posicao p, int ignorar = -1) {
+    for (int i = 0; i < static_cast<int>(lista.size()); i++) {
+        if (i != ignorar && lista[i].vivo && iguais(lista[i].posicao, p)) return true;
     }
     return false;
 }
 
-bool naExplosao(Posicao p) {
-    for (Posicao parte : areaExplosao) if (iguais(parte, p)) return true;
+// Existe uma bomba ainda nao detonada nesta celula? Serve para os inimigos
+// desviarem dela, para o teleporte nao cair em cima e para nao empilhar duas
+// bombas na mesma casa.
+bool temBombaEm(const vector<Bomba>& lista, Posicao p) {
+    for (const Bomba& b : lista) if (!b.explodindo && iguais(b.posicao, p)) return true;
     return false;
 }
 
-void limparArea(int linha, int coluna) {
-    mapa[linha][coluna] = VAZIO;
-    if (linha > 0) mapa[linha - 1][coluna] = VAZIO;
-    if (linha < LINHAS - 1) mapa[linha + 1][coluna] = VAZIO;
-    if (coluna > 0) mapa[linha][coluna - 1] = VAZIO;
-    if (coluna < COLUNAS - 1) mapa[linha][coluna + 1] = VAZIO;
+// Esta celula esta pegando fogo neste instante?
+bool naExplosao(const vector<Posicao>& area, Posicao p) {
+    for (Posicao parte : area) if (iguais(parte, p)) return true;
+    return false;
 }
 
-void criarMapa() {
+// Quantos inimigos ainda estao vivos. Usado no placar e na vitoria.
+int inimigosVivos(const vector<Inimigo>& lista) {
+    int total = 0;
+    for (const Inimigo& inimigo : lista) if (inimigo.vivo) total++;
+    return total;
+}
+
+/* ---------------------------------------------------------------------------
+   5) GERACAO DO CENARIO
+
+   [PDF - PAREDES] "O cenario do jogo devera ser composto por paredes solidas e
+   por paredes frageis."
+   --------------------------------------------------------------------------- */
+
+// Abre espaco em volta de um ponto de nascimento, para ninguem nascer preso.
+// O laco vai de 1 ate LINHAS-2 / COLUNAS-2 de proposito: a moldura externa
+// (linha 0, linha LINHAS-1, coluna 0, coluna COLUNAS-1) NUNCA pode ser aberta,
+// senao o tabuleiro fica com buracos na parede de fora e os personagens saem
+// andando pela borda.
+void limparArea(TipoCelula cenario[][COLUNAS], int linha, int coluna) {
+    cenario[linha][coluna] = VAZIO;
+    if (linha > 1) cenario[linha - 1][coluna] = VAZIO;
+    if (linha < LINHAS - 2) cenario[linha + 1][coluna] = VAZIO;
+    if (coluna > 1) cenario[linha][coluna - 1] = VAZIO;
+    if (coluna < COLUNAS - 2) cenario[linha][coluna + 1] = VAZIO;
+}
+
+// Monta o tabuleiro do zero. Tres regras, nesta ordem:
+//   1. borda        -> parede solida (a moldura que fecha o mapa);
+//   2. pilar        -> parede solida nas celulas de linha E coluna pares,
+//                      formando o xadrez classico do Bomberman;
+//   3. resto        -> CHANCE_PAREDE_FRAGIL% de virar parede fragil, senao chao.
+// A matriz e recebida por parametro (ela e alterada aqui dentro).
+void criarMapa(TipoCelula cenario[][COLUNAS]) {
     uniform_int_distribution<int> chance(0, 99);
     for (int l = 0; l < LINHAS; l++) {
         for (int c = 0; c < COLUNAS; c++) {
             bool borda = l == 0 || l == LINHAS - 1 || c == 0 || c == COLUNAS - 1;
             bool pilar = l % 2 == 0 && c % 2 == 0;
-            if (borda || pilar) mapa[l][c] = PAREDE_SOLIDA;
-            else if (chance(gerador) < 36) mapa[l][c] = PAREDE_FRAGIL;
-            else mapa[l][c] = VAZIO;
+            if (borda || pilar) cenario[l][c] = PAREDE_SOLIDA;
+            else if (chance(gerador) < CHANCE_PAREDE_FRAGIL) cenario[l][c] = PAREDE_FRAGIL;
+            else cenario[l][c] = VAZIO;
         }
     }
 }
 
-vector<Posicao> posicoesLivresParaBonus() {
-    vector<Posicao> livres;
+// Lista todas as paredes frageis existentes; delas sairao os blocos bonus.
+vector<Posicao> paredesFrageisDoMapa(const TipoCelula cenario[][COLUNAS]) {
+    vector<Posicao> encontradas;
     for (int l = 1; l < LINHAS - 1; l++)
         for (int c = 1; c < COLUNAS - 1; c++)
-            if (mapa[l][c] == PAREDE_FRAGIL) livres.push_back({l, c});
-    return livres;
+            if (cenario[l][c] == PAREDE_FRAGIL) encontradas.push_back({l, c});
+    return encontradas;
 }
 
-void posicionarBlocosBonus() {
-    blocosBonus.clear();
-    vector<Posicao> candidatos = posicoesLivresParaBonus();
-    shuffle(candidatos.begin(), candidatos.end(), gerador);
-    vector<TipoItem> tipos = {CHUTE, TELEPORTE};
-    for (int i = 0; i < 2 && i < static_cast<int>(candidatos.size()); i++) {
-        mapa[candidatos[i].linha][candidatos[i].coluna] = PAREDE_BONUS;
-        blocosBonus.push_back({candidatos[i], tipos[i]});
+// Escolhe ao acaso algumas paredes frageis e as transforma em PAREDE_BONUS,
+// guardando no vetor blocosBonus qual carta cada uma esconde.
+void posicionarBlocosBonus(TipoCelula cenario[][COLUNAS], vector<BlocoBonus>& blocos) {
+    blocos.clear();
+    vector<Posicao> candidatos = paredesFrageisDoMapa(cenario);
+    shuffle(candidatos.begin(), candidatos.end(), gerador);  // <algorithm> + <random>
+    vector<TipoItem> tipos = {DUAS_BOMBAS, TELEPORTE};
+    for (int i = 0; i < TOTAL_BLOCOS_BONUS && i < static_cast<int>(candidatos.size()); i++) {
+        cenario[candidatos[i].linha][candidatos[i].coluna] = PAREDE_BONUS;
+        blocos.push_back({candidatos[i], tipos[i]});
     }
 }
 
-void sortearPosicoesIniciais(vector<Posicao>& posicoes) {
-    // Cantos do mapa mais os pontos medios das bordas: da para o jogador e
-    // os inimigos comecarem em posicoes diferentes a cada partida.
+// Sorteia de onde cada personagem comeca: os cantos do mapa e os pontos medios
+// das bordas, embaralhados. O vetor vai POR REFERENCIA porque a funcao
+// preenche ele para quem chamou.
+void sortearPosicoesIniciais(vector<Posicao>& posicoes, TipoCelula cenario[][COLUNAS]) {
     posicoes = {{1, 1}, {1, COLUNAS - 2}, {LINHAS - 2, 1}, {LINHAS - 2, COLUNAS - 2},
                 {1, COLUNAS / 2}, {LINHAS - 2, COLUNAS / 2},
                 {LINHAS / 2, 1}, {LINHAS / 2, COLUNAS - 2}};
     shuffle(posicoes.begin(), posicoes.end(), gerador);
-    for (const Posicao& p : posicoes) limparArea(p.linha, p.coluna);
+    for (const Posicao& p : posicoes) limparArea(cenario, p.linha, p.coluna);
 }
 
+// Prepara um inimigo recem-nascido: vivo, parado, esperando a primeira pausa
+// terminar para comecar a andar.
+Inimigo criarInimigo(Posicao onde) {
+    uniform_int_distribution<int> sorteioPausa(PAUSA_INIMIGO_MIN_MS, PAUSA_INIMIGO_MAX_MS);
+    Inimigo novo;
+    novo.posicao = onde;
+    novo.vivo = true;
+    novo.tempoProximoPassoMs = sorteioPausa(gerador);
+    novo.passosRestantes = 0;
+    novo.direcao = {0, 0};
+    novo.perseguindo = false;
+    return novo;
+}
+
+// Devolve o jogo ao estado inicial: mapa novo, inimigos novos, placar zerado.
+// Chamada pela tecla R, pelo inicio de uma partida e pelo modo automatico.
 void reiniciar() {
-    criarMapa();
+    criarMapa(mapa);
     vector<Posicao> spawns;
-    sortearPosicoesIniciais(spawns);
-    posicionarBlocosBonus();
+    sortearPosicoesIniciais(spawns, mapa);
+    posicionarBlocosBonus(mapa, blocosBonus);
     invalidarCacheMapa();
-    jogador = spawns[0];
-    direcaoJogador = {0, 1};
+
+    jogador = spawns[0];            // o primeiro sorteado e o jogador
     inimigos.clear();
-    uniform_int_distribution<int> sorteioIntervalo(INTERVALO_INIMIGO_MIN_MS, INTERVALO_INIMIGO_MAX_MS);
-    for (int i = 1; i <= TOTAL_INIMIGOS_INICIAL; i++)
-        inimigos.push_back({spawns[i], true, sorteioIntervalo(gerador)});
+    // [PDF - FUNCIONALIDADE 10] A quantidade de inimigos sai de uma unica
+    // constante: TOTAL_INIMIGOS_INICIAL.
+    for (int i = 1; i <= TOTAL_INIMIGOS_INICIAL; i++) inimigos.push_back(criarInimigo(spawns[i]));
+
     itensNoChao.clear();
-    possuiCartaChute = false;
-    possuiCartaTeleporte = false;
     alcanceExplosao = ALCANCE_EXPLOSAO_INICIAL;
-    bomba = Bomba{};
+    maxBombas = MAX_BOMBAS_INICIAL;     // a carta de duas bombas vale por partida
+    possuiCartaTeleporte = false;
+    bombas.clear();                     // nenhuma bomba no cenario
     areaExplosao.clear();
     estado = JOGANDO;
     pontos = 0;
     tempoMovimentoMs = 0;
 }
 
+// Sai do menu e comeca a partida no modo escolhido.
 void iniciarPartida(ModoJogo novoModo) {
     modo = novoModo;
     reiniciar();
 }
 
-void coletarItens() {
-    for (size_t i = 0; i < itensNoChao.size(); i++) {
-        if (iguais(itensNoChao[i].posicao, jogador)) {
-            if (itensNoChao[i].tipo == CHUTE) possuiCartaChute = true;
-            else possuiCartaTeleporte = true;
-            itensNoChao.erase(itensNoChao.begin() + i);
+/* ---------------------------------------------------------------------------
+   6) JOGADOR
+   --------------------------------------------------------------------------- */
+
+// Se o jogador pisou em cima de uma carta caida no chao, ele a recolhe.
+// `int& limiteBombas` vai por referencia porque a carta DUAS_BOMBAS altera o
+// limite de bombas do jogo inteiro; `bool& temTeleporte`, pelo mesmo motivo.
+void coletarItens(Posicao onde, vector<Item>& chao, int& limiteBombas, bool& temTeleporte) {
+    for (size_t i = 0; i < chao.size(); i++) {
+        if (iguais(chao[i].posicao, onde)) {
+            if (chao[i].tipo == DUAS_BOMBAS) limiteBombas = MAX_BOMBAS_COM_CARTA;
+            else temTeleporte = true;
+            chao.erase(chao.begin() + i);   // remove do vetor: ja foi pego
             return;
         }
     }
 }
 
-void moverJogador(int dl, int dc) {
-    direcaoJogador = {dl, dc};
-    if (estado != JOGANDO || tempoMovimentoMs > 0) return;
-    Posicao destino{jogador.linha + dl, jogador.coluna + dc};
-    // A bomba nao impede o movimento do jogador.
-    if (livre(destino.linha, destino.coluna)) jogador = destino;
-    if (temInimigo(jogador) || naExplosao(jogador)) estado = DERROTA;
-    coletarItens();
+// [PDF - FUNCIONALIDADE 1] "O jogador se move corretamente para todas as direcoes."
+// [PDF - FUNCIONALIDADE 4] "O jogador se move sem bugs."
+// dl e dc sao o deslocamento: (-1,0) cima, (1,0) baixo, (0,-1) esquerda, (0,1) direita.
+// A posicao vai POR REFERENCIA (Posicao&) porque a funcao precisa altera-la.
+void moverJogador(Posicao& personagem, int dl, int dc) {
+    if (estado != JOGANDO || tempoMovimentoMs > 0) return;  // partida acabou ou em cooldown
+
+    Posicao destino{personagem.linha + dl, personagem.coluna + dc};
+
+    // [PDF - FUNCIONALIDADE 3] So anda se o destino for chao. Qualquer parede barra.
+    // [PDF - FUNCIONALIDADE 2] livre() nao consulta as bombas, entao andar sobre
+    // a celula de uma bomba e permitido.
+    if (livre(mapa, destino.linha, destino.coluna)) personagem = destino;
+
+    // [PDF - FUNCIONALIDADE 8] "O jogador morre quando colide com um inimigo."
+    // [PDF - FUNCIONALIDADE 9] Andar para dentro do fogo tambem mata.
+    if (temInimigo(inimigos, personagem) || naExplosao(areaExplosao, personagem)) estado = DERROTA;
+
+    coletarItens(personagem, itensNoChao, maxBombas, possuiCartaTeleporte);
+
+    // [PDF - FUNCIONALIDADE 4] O cooldown e o que impede o personagem de
+    // atravessar o mapa inteiro em um quadro e de "tremer" na tela.
     tempoMovimentoMs = INTERVALO_MOVIMENTO_MS;
 }
 
-void colocarBomba() {
-    if (estado != JOGANDO || bomba.ativa) return;
-    bomba.posicao = jogador;
-    bomba.ativa = true;
-    bomba.explodindo = false;
-    bomba.tempoMs = TEMPO_BOMBA_MS;
+// [PDF - FUNCIONALIDADE 5] "O jogador consegue colocar bombas onde esta."
+// [PDF - FUNCIONALIDADE 6] "O jogador nao consegue colocar uma segunda bomba
+//                           enquanto outra esta no mapa."
+// [PDF - BOMBA] "Apenas uma bomba podera estar presente no cenario do jogo."
+//
+// A regra do enunciado e o teste `lista.size() >= limite`, com `limite` valendo
+// MAX_BOMBAS_INICIAL (= 1) durante toda a partida. O limite so sobe para 2 se o
+// jogador encontrar a carta DUAS_BOMBAS, que e um extra nosso, fora do
+// enunciado. Enquanto ele nao pegar a carta, o comportamento e exatamente o
+// exigido: uma bomba por vez.
+void colocarBomba(vector<Bomba>& lista, Posicao origem, int limite) {
+    if (estado != JOGANDO) return;
+    if (static_cast<int>(lista.size()) >= limite) return;   // <- FUNCIONALIDADE 6
+    if (temBombaEm(lista, origem)) return;                  // nao empilha duas na mesma casa
+
+    Bomba nova;
+    nova.posicao = origem;              // a bomba nasce exatamente onde o jogador esta
+    nova.explodindo = false;
+    nova.tempoMs = TEMPO_BOMBA_MS;      // comeca a contagem regressiva
+    lista.push_back(nova);
 }
 
-void chutarBomba() {
-    if (estado != JOGANDO || !possuiCartaChute || !bomba.ativa || bomba.explodindo) return;
-    Posicao esperado{jogador.linha + direcaoJogador.linha, jogador.coluna + direcaoJogador.coluna};
-    if (!iguais(bomba.posicao, esperado)) return;
-    Posicao destinoFinal = bomba.posicao;
-    for (int passo = 1; passo <= ALCANCE_CHUTE; passo++) {
-        Posicao tentativa{bomba.posicao.linha + direcaoJogador.linha * passo,
-                          bomba.posicao.coluna + direcaoJogador.coluna * passo};
-        if (!livre(tentativa.linha, tentativa.coluna) || temInimigo(tentativa)) break;
-        destinoFinal = tentativa;
-    }
-    bomba.posicao = destinoFinal;
-    possuiCartaChute = false;
-}
-
+// EXTRA (nao pedido no PDF): com a carta de teleporte, pula para uma celula
+// livre sorteada do tabuleiro.
 void teletransportarJogador() {
     if (estado != JOGANDO || !possuiCartaTeleporte) return;
     vector<Posicao> livres;
     for (int l = 1; l < LINHAS - 1; l++)
         for (int c = 1; c < COLUNAS - 1; c++)
-            if (livre(l, c) && !temInimigo({l, c}) && !(bomba.ativa && iguais({l, c}, bomba.posicao)))
+            if (livre(mapa, l, c) && !temInimigo(inimigos, {l, c}) && !temBombaEm(bombas, {l, c}))
                 livres.push_back({l, c});
     if (livres.empty()) return;
     uniform_int_distribution<int> sorteio(0, static_cast<int>(livres.size()) - 1);
     jogador = livres[sorteio(gerador)];
-    if (temInimigo(jogador) || naExplosao(jogador)) estado = DERROTA;
-    coletarItens();
+    if (temInimigo(inimigos, jogador) || naExplosao(areaExplosao, jogador)) estado = DERROTA;
+    coletarItens(jogador, itensNoChao, maxBombas, possuiCartaTeleporte);
     possuiCartaTeleporte = false;
 }
 
-void destruirBlocoBonus(int linha, int coluna) {
-    for (size_t i = 0; i < blocosBonus.size(); i++) {
-        if (blocosBonus[i].posicao.linha == linha && blocosBonus[i].posicao.coluna == coluna) {
-            itensNoChao.push_back({blocosBonus[i].posicao, blocosBonus[i].tipo});
-            blocosBonus.erase(blocosBonus.begin() + i);
+/* ---------------------------------------------------------------------------
+   7) BOMBAS E EXPLOSAO
+   --------------------------------------------------------------------------- */
+
+// Quando uma PAREDE_BONUS e destruida, a carta que estava escondida vira um
+// item no chao. Os dois vetores vao por referencia porque ambos sao alterados.
+void destruirBlocoBonus(vector<BlocoBonus>& blocos, vector<Item>& chao, int linha, int coluna) {
+    for (size_t i = 0; i < blocos.size(); i++) {
+        if (blocos[i].posicao.linha == linha && blocos[i].posicao.coluna == coluna) {
+            chao.push_back({blocos[i].posicao, blocos[i].tipo});
+            blocos.erase(blocos.begin() + i);
             return;
         }
     }
 }
 
-void adicionarRaio(int dl, int dc) {
-    for (int distancia = 1; distancia <= alcanceExplosao; distancia++) {
-        int l = bomba.posicao.linha + dl * distancia;
-        int c = bomba.posicao.coluna + dc * distancia;
-        if (!dentro(l, c) || mapa[l][c] == PAREDE_SOLIDA) return;
-        areaExplosao.push_back({l, c});
-        if (mapa[l][c] == PAREDE_FRAGIL) {
-            mapa[l][c] = VAZIO;
+// [PDF - FUNCIONALIDADE 11] "A bomba nao destroi paredes solidas."
+// [PDF - FUNCIONALIDADE 12] "A bomba destroi paredes frageis."
+// [PDF - BOMBA] "A explosao nao podera quebrar paredes solidas."
+// Avanca uma das quatro direcoes da cruz de fogo, celula por celula:
+//   - PAREDE_SOLIDA  -> return imediato: a chama nem entra na celula;
+//   - PAREDE_FRAGIL  -> a celula pega fogo, a parede vira chao e o raio PARA
+//                       ali (uma parede nao deixa a chama passar para tras dela);
+//   - chao           -> a celula pega fogo e o raio continua.
+// O vetor "area" vai por referencia porque a funcao acrescenta celulas nele.
+void adicionarRaio(TipoCelula cenario[][COLUNAS], Posicao origem, int dl, int dc,
+                   int alcance, vector<Posicao>& area) {
+    for (int distancia = 1; distancia <= alcance; distancia++) {
+        int l = origem.linha + dl * distancia;
+        int c = origem.coluna + dc * distancia;
+
+        if (!dentro(l, c) || cenario[l][c] == PAREDE_SOLIDA) return;  // FUNCIONALIDADE 11
+
+        area.push_back({l, c});                                       // FUNCIONALIDADE 13
+
+        if (cenario[l][c] == PAREDE_FRAGIL) {                         // FUNCIONALIDADE 12
+            cenario[l][c] = VAZIO;
             invalidarCacheMapa();
             return;
         }
-        if (mapa[l][c] == PAREDE_BONUS) {
-            mapa[l][c] = VAZIO;
-            destruirBlocoBonus(l, c);
+        if (cenario[l][c] == PAREDE_BONUS) {
+            cenario[l][c] = VAZIO;
+            destruirBlocoBonus(blocosBonus, itensNoChao, l, c);
             invalidarCacheMapa();
             return;
         }
     }
 }
 
-void matarInimigo(Inimigo& inimigo, int& pontuacao) {
+// Marca um inimigo como morto e paga a recompensa.
+// [PDF - TECNICA 3] Tres passagens diferentes na mesma assinatura:
+//   Inimigo& -> referencia, porque o inimigo e alterado (vivo = false);
+//   int&     -> referencia, porque a pontuacao e o alcance sao somados aqui e
+//               o resultado precisa valer para quem chamou.
+void matarInimigo(Inimigo& inimigo, int& pontuacao, int& alcance) {
     inimigo.vivo = false;
-    pontuacao += 100;
-    // A cada inimigo derrotado a bomba fica mais forte, ate o limite maximo.
-    if (alcanceExplosao < ALCANCE_EXPLOSAO_MAXIMO) alcanceExplosao++;
+    pontuacao += PONTOS_POR_INIMIGO;
+    // EXTRA: a cada inimigo derrotado a bomba fica mais forte, ate o limite.
+    if (alcance < ALCANCE_EXPLOSAO_MAXIMO) alcance++;
 }
 
-void atingirPersonagens(vector<Inimigo>& listaInimigos,
-                        EstadoJogo& estadoAtual, int& pontuacao) {
-    // Os dados recebidos por referencia sao alterados diretamente.
-    if (naExplosao(jogador)) estadoAtual = DERROTA;
-    for (Inimigo& inimigo : listaInimigos) {
-        if (inimigo.vivo && naExplosao(inimigo.posicao)) matarInimigo(inimigo, pontuacao);
+// [PDF - FUNCIONALIDADE 9]  "O jogador morre quando uma bomba explode perto dele."
+// [PDF - FUNCIONALIDADE 15] "A condicao de derrota e atingida corretamente."
+// [PDF - BOMBA] "Quando a bomba explodir devera destruir todos os jogadores e
+//                inimigos que estiverem em sua proximidade."
+// Esta e a sub-rotina que o PDF cobra em TECNICA 3: ela recebe a area em chamas
+// so para leitura (const) e o vetor de inimigos, o estado da partida, a
+// pontuacao e o alcance por referencia, alterando os quatro diretamente.
+void atingirPersonagens(const vector<Posicao>& area, vector<Inimigo>& listaInimigos,
+                        EstadoJogo& estadoAtual, int& pontuacao, int& alcance) {
+    if (naExplosao(area, jogador)) estadoAtual = DERROTA;           // FUNCIONALIDADE 9
+    for (Inimigo& inimigo : listaInimigos) {                        // & = altera o original
+        if (inimigo.vivo && naExplosao(area, inimigo.posicao))
+            matarInimigo(inimigo, pontuacao, alcance);              // INIMIGO morre na explosao
     }
 }
 
-void iniciarExplosao() {
-    bomba.explodindo = true;
-    bomba.tempoMs = TEMPO_EXPLOSAO_MS;
-    areaExplosao.clear();
-    areaExplosao.push_back(bomba.posicao);
-    adicionarRaio(-1, 0);
-    adicionarRaio(1, 0);
-    adicionarRaio(0, -1);
-    adicionarRaio(0, 1);
-    atingirPersonagens(inimigos, estado, pontos);
+// [PDF - FUNCIONALIDADE 13] "A explosao da bomba devera ser visivel."
+// Monta a cruz de fogo DESTA bomba e guarda as celulas dentro dela. As paredes
+// frageis sao destruidas aqui, uma unica vez, no instante da explosao.
+void iniciarExplosao(Bomba& alvo) {
+    alvo.explodindo = true;
+    alvo.tempoMs = TEMPO_EXPLOSAO_MS;   // agora conta o tempo das chamas na tela
+    alvo.celulas.clear();
+    alvo.celulas.push_back(alvo.posicao);                                     // centro
+    adicionarRaio(mapa, alvo.posicao, -1, 0, alcanceExplosao, alvo.celulas);  // cima
+    adicionarRaio(mapa, alvo.posicao, 1, 0, alcanceExplosao, alvo.celulas);   // baixo
+    adicionarRaio(mapa, alvo.posicao, 0, -1, alcanceExplosao, alvo.celulas);  // esquerda
+    adicionarRaio(mapa, alvo.posicao, 0, 1, alcanceExplosao, alvo.celulas);   // direita
 }
 
-void atualizarBomba(int tempoMs) {
-    if (!bomba.ativa) return;
-    bomba.tempoMs -= tempoMs;
-    if (!bomba.explodindo && bomba.tempoMs <= 0) iniciarExplosao();
-    else if (bomba.explodindo) {
-        atingirPersonagens(inimigos, estado, pontos);
-        if (bomba.tempoMs <= 0) {
-            bomba.ativa = false;
-            bomba.explodindo = false;
-            areaExplosao.clear();
-        }
+// Junta em um unico vetor as celulas em chamas de TODAS as bombas que estao
+// explodindo. Com duas bombas no cenario, as duas cruzes de fogo machucam ao
+// mesmo tempo, e o resto do jogo continua consultando uma lista so.
+void recalcularAreaExplosao(const vector<Bomba>& lista, vector<Posicao>& area) {
+    area.clear();
+    for (const Bomba& b : lista)
+        if (b.explodindo)
+            for (const Posicao& p : b.celulas) area.push_back(p);
+}
+
+// [PDF - BOMBA] "A bomba ... devera explodir depois de um tempo."
+// [PDF - FUNCIONALIDADE 7] "O jogador consegue colocar uma segunda bomba apos
+//                           a explosao da anterior."
+// Relogio de todas as bombas, chamado a cada tick. Cada bomba vive duas fases:
+//   fase 1 (explodindo = false) -> conta TEMPO_BOMBA_MS, o pavio;
+//   fase 2 (explodindo = true)  -> conta TEMPO_EXPLOSAO_MS com o fogo na tela.
+// Ao fim da fase 2 a bomba SAI DO VETOR, e e so por isso que o jogador pode
+// plantar a proxima (ver colocarBomba, FUNCIONALIDADE 6).
+void atualizarBombas(int tempoMs, vector<Bomba>& lista) {
+    for (Bomba& b : lista) {
+        b.tempoMs -= tempoMs;
+        if (!b.explodindo && b.tempoMs <= 0) iniciarExplosao(b);
     }
+
+    // Remove as explosoes que ja terminaram. O laco nao usa for-each porque
+    // apagar um elemento no meio do vetor muda os indices seguintes.
+    for (size_t i = 0; i < lista.size(); ) {
+        if (lista[i].explodindo && lista[i].tempoMs <= 0) lista.erase(lista.begin() + i);
+        else i++;
+    }
+
+    recalcularAreaExplosao(lista, areaExplosao);
+
+    // O dano e reaplicado a cada tick enquanto houver fogo: assim, quem ANDAR
+    // para dentro das chamas tambem morre, nao so quem estava la no instante
+    // da explosao.
+    if (!areaExplosao.empty())
+        atingirPersonagens(areaExplosao, inimigos, estado, pontos, alcanceExplosao);
 }
 
+/* ---------------------------------------------------------------------------
+   8) INIMIGOS
+
+   [PDF - FUNCIONALIDADE 10] "O inimigo se move conforme solicitado."
+   [PDF - INIMIGO] "O inimigo, de tempos em tempos, ira se mover 1, 2 ou 3
+                    quadrados em uma direcao aleatoria livre ou ate encontrar
+                    um obstaculo."
+
+   Como isso foi implementado: cada inimigo guarda uma CAMINHADA (uma direcao
+   sorteada + quantos quadrados faltam). Ele da um quadrado por vez, esperando
+   INTERVALO_PASSO_INIMIGO_MS entre eles, e ao terminar faz uma pausa sorteada
+   entre PAUSA_INIMIGO_MIN_MS e PAUSA_INIMIGO_MAX_MS ("de tempos em tempos").
+   Dar os tres quadrados de uma vez so tambem cumpriria o enunciado, mas na
+   tela o inimigo pareceria teletransportar, porque ele seria desenhado apenas
+   na posicao final.
+   --------------------------------------------------------------------------- */
+
+// Busca em largura (BFS) com FILA (<queue>): devolve qual o PRIMEIRO passo do
+// caminho mais curto de "origem" ate "alvo", andando so por celulas livres.
+// Se nao houver caminho, devolve a propria origem.
 Posicao proximoPassoParaAlvo(Posicao origem, Posicao alvo) {
     const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
-    bool visitado[LINHAS][COLUNAS]{};
-    Posicao anterior[LINHAS][COLUNAS];
-    queue<Posicao> fila;
+    bool visitado[LINHAS][COLUNAS]{};       // matriz de apoio: ja passei por aqui?
+    Posicao anterior[LINHAS][COLUNAS];      // de qual celula eu cheguei nesta
+    queue<Posicao> fila;                    // a fila que da nome a "busca em largura"
     fila.push(origem);
     visitado[origem.linha][origem.coluna] = true;
     bool encontrou = false;
@@ -363,7 +684,8 @@ Posicao proximoPassoParaAlvo(Posicao origem, Posicao alvo) {
         fila.pop();
         for (const auto& direcao : direcoes) {
             Posicao proxima{atual.linha + direcao[0], atual.coluna + direcao[1]};
-            if (!livre(proxima.linha, proxima.coluna) || visitado[proxima.linha][proxima.coluna]) continue;
+            if (!livre(mapa, proxima.linha, proxima.coluna) ||
+                visitado[proxima.linha][proxima.coluna]) continue;
             visitado[proxima.linha][proxima.coluna] = true;
             anterior[proxima.linha][proxima.coluna] = atual;
             if (iguais(proxima, alvo)) { encontrou = true; break; }
@@ -372,124 +694,192 @@ Posicao proximoPassoParaAlvo(Posicao origem, Posicao alvo) {
     }
 
     if (!encontrou) return origem;
+    // Volta pelo caminho de tras para frente ate achar o vizinho da origem.
     Posicao passo = alvo;
     while (!iguais(anterior[passo.linha][passo.coluna], origem))
         passo = anterior[passo.linha][passo.coluna];
     return passo;
 }
 
-void moverIndividualAleatorio(Inimigo& inimigo, int indice) {
-    const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+// Sorteia a proxima caminhada de um inimigo: quantos quadrados e para onde.
+// Perto do jogador, ha CHANCE_PERSEGUICAO% de chance de ele perseguir usando o
+// BFS acima; fora disso, escolhe uma das quatro direcoes livres ao acaso,
+// exatamente como o enunciado pede.
+void planejarCaminhada(Inimigo& inimigo, int indice) {
+    uniform_int_distribution<int> sorteioPassos(PASSOS_INIMIGO_MIN, PASSOS_INIMIGO_MAX);
     uniform_int_distribution<int> sorteioDirecao(0, 3);
-    uniform_int_distribution<int> sorteioPassos(1, 3);
+    uniform_int_distribution<int> sorteioChance(0, 99);
+
+    // Distancia de Manhattan: soma das diferencas de linha e de coluna.
+    int distancia = abs(inimigo.posicao.linha - jogador.linha) +
+                    abs(inimigo.posicao.coluna - jogador.coluna);
+    inimigo.perseguindo = distancia <= DISTANCIA_PERSEGUICAO &&
+                          sorteioChance(gerador) < CHANCE_PERSEGUICAO;
+    inimigo.passosRestantes = sorteioPassos(gerador);   // 1, 2 ou 3 quadrados
+
+    if (inimigo.perseguindo) {
+        inimigo.direcao = {0, 0};   // perseguindo, a direcao e recalculada a cada passo
+        return;
+    }
+
+    // Caminhada aleatoria: testa as quatro direcoes a partir de uma sorteada,
+    // e fica com a primeira que estiver livre.
+    const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
     int inicio = sorteioDirecao(gerador);
-    int passos = sorteioPassos(gerador);
     for (int tentativa = 0; tentativa < 4; tentativa++) {
         int d = (inicio + tentativa) % 4;
-        bool moveu = false;
-        for (int passo = 0; passo < passos; passo++) {
-            Posicao destino{inimigo.posicao.linha + direcoes[d][0], inimigo.posicao.coluna + direcoes[d][1]};
-            if (!livre(destino.linha, destino.coluna)) break;
-            if (bomba.ativa && iguais(destino, bomba.posicao)) break;
-            if (temInimigo(destino, indice)) break;
-            inimigo.posicao = destino;
-            moveu = true;
-            if (iguais(destino, jogador)) estado = DERROTA;
-            if (naExplosao(destino)) { matarInimigo(inimigo, pontos); break; }
+        Posicao destino{inimigo.posicao.linha + direcoes[d][0],
+                        inimigo.posicao.coluna + direcoes[d][1]};
+        if (livre(mapa, destino.linha, destino.coluna) && !temInimigo(inimigos, destino, indice)) {
+            inimigo.direcao = {direcoes[d][0], direcoes[d][1]};
+            return;
         }
-        if (moveu) break;
     }
+    inimigo.passosRestantes = 0;    // cercado: fica parado ate a proxima pausa
 }
 
-void moverIndividualPerseguicao(Inimigo& inimigo, int indice, int passos) {
-    for (int passo = 0; passo < passos; passo++) {
-        Posicao alvo = proximoPassoParaAlvo(inimigo.posicao, jogador);
-        bool bloqueado = iguais(alvo, inimigo.posicao) || temInimigo(alvo, indice) ||
-                          (bomba.ativa && iguais(alvo, bomba.posicao));
-        if (bloqueado) return;
-        inimigo.posicao = alvo;
-        if (iguais(alvo, jogador)) { estado = DERROTA; return; }
-        if (naExplosao(alvo)) { matarInimigo(inimigo, pontos); return; }
+// Executa UM quadrado da caminhada atual. Devolve false se o inimigo bateu em
+// um obstaculo (ai a caminhada e interrompida, como o enunciado manda: "ou ate
+// encontrar um obstaculo").
+bool darUmPassoInimigo(Inimigo& inimigo, int indice) {
+    Posicao destino;
+    if (inimigo.perseguindo) {
+        destino = proximoPassoParaAlvo(inimigo.posicao, jogador);
+        if (iguais(destino, inimigo.posicao)) return false;  // sem caminho ate o jogador
+    } else {
+        destino = {inimigo.posicao.linha + inimigo.direcao.linha,
+                   inimigo.posicao.coluna + inimigo.direcao.coluna};
     }
-}
 
-void moverInimigos(int tempoMs) {
-    // Cada inimigo tem seu proprio relogio (sorteado em INTERVALO_INIMIGO_MIN/MAX_MS),
-    // entao eles nao andam mais todos em sincronia. Perto do jogador, ha uma
-    // chance de perseguir usando o caminho mais curto (mapeado com BFS, 1 a 3
-    // passos por vez, na mesma velocidade do passeio aleatorio); caso
-    // contrario, mantem o passeio aleatorio original.
-    uniform_int_distribution<int> sorteioIntervalo(INTERVALO_INIMIGO_MIN_MS, INTERVALO_INIMIGO_MAX_MS);
-    uniform_int_distribution<int> sorteioChance(0, 99);
-    uniform_int_distribution<int> sorteioPassos(1, 3);
-    for (int i = 0; i < static_cast<int>(inimigos.size()); i++) {
-        Inimigo& inimigo = inimigos[i];
-        if (!inimigo.vivo) continue;
-        inimigo.tempoProximoMovimentoMs -= tempoMs;
-        if (inimigo.tempoProximoMovimentoMs > 0) continue;
-        inimigo.tempoProximoMovimentoMs = sorteioIntervalo(gerador);
+    // [PDF - INIMIGO] "...em uma direcao aleatoria livre..."
+    // TRAVA ANTI-DIAGONAL: um passo so vale se for de EXATAMENTE um quadrado,
+    // em linha OU em coluna. A soma dos deslocamentos em modulo tem de dar 1:
+    //   cima/baixo/esquerda/direita -> |dl| + |dc| = 1  (aceito)
+    //   diagonal                    -> |dl| + |dc| = 2  (recusado)
+    //   pulo de 2 ou 3 celulas      -> |dl| + |dc| >= 2 (recusado)
+    // As direcoes ja saem da tabela de 4 direcoes cardeais e o BFS da
+    // perseguicao so expande vizinhos cardeais, entao isto e uma garantia
+    // extra: nenhum caminho do codigo consegue mover um inimigo na diagonal
+    // nem faze-lo "pular" celulas dentro do mesmo quadro.
+    int dl = destino.linha - inimigo.posicao.linha;
+    int dc = destino.coluna - inimigo.posicao.coluna;
+    if (abs(dl) + abs(dc) != 1) return false;
 
-        int distancia = abs(inimigo.posicao.linha - jogador.linha) + abs(inimigo.posicao.coluna - jogador.coluna);
-        bool perseguir = distancia <= DISTANCIA_PERSEGUICAO && sorteioChance(gerador) < CHANCE_PERSEGUICAO;
-        if (perseguir) moverIndividualPerseguicao(inimigo, i, sorteioPassos(gerador));
-        else moverIndividualAleatorio(inimigo, i);
-    }
-}
+    // Obstaculos que interrompem a caminhada:
+    if (!livre(mapa, destino.linha, destino.coluna)) return false;      // parede
+    if (temBombaEm(bombas, destino)) return false;                      // uma bomba no chao
+    if (temInimigo(inimigos, destino, indice)) return false;            // outro inimigo
 
-void verificarVitoria() {
-    if (estado != JOGANDO) return;
-    for (const Inimigo& inimigo : inimigos) if (inimigo.vivo) return;
-    estado = VITORIA;
-}
+    inimigo.posicao = destino;
 
-// Logica pura de "essa celula seria atingida por uma bomba plantada em
-// origemBomba", sem depender da bomba de verdade estar ativa. Usada tanto
-// para o perigo da bomba real (perigoDaBomba) quanto para o bot simular,
-// antes de plantar, se uma bomba hipotetica ali teria escape (existeFugaSegura).
-bool celulaNoAlcance(Posicao origemBomba, Posicao p) {
-    if (iguais(p, origemBomba)) return true;
-    int dl = p.linha - origemBomba.linha;
-    int dc = p.coluna - origemBomba.coluna;
-    if (dl != 0 && dc != 0) return false;
-    int distancia = abs(dl) + abs(dc);
-    if (distancia > alcanceExplosao) return false;
-    int passoL = (dl > 0) - (dl < 0);
-    int passoC = (dc > 0) - (dc < 0);
-    for (int i = 1; i <= distancia; i++) {
-        int l = origemBomba.linha + passoL * i;
-        int c = origemBomba.coluna + passoC * i;
-        if (mapa[l][c] == PAREDE_SOLIDA) return false;
-        if (mapa[l][c] == PAREDE_FRAGIL || mapa[l][c] == PAREDE_BONUS) return i == distancia;
+    // [PDF - FUNCIONALIDADE 8] Se o inimigo andou por cima do jogador, o
+    // jogador morre. A colisao e testada dos DOIS lados (aqui e em moverJogador),
+    // porque qualquer um dos dois pode ser quem se move.
+    if (iguais(destino, jogador)) { estado = DERROTA; return false; }
+
+    // [PDF - INIMIGO] O inimigo morre se entrar em uma celula em chamas.
+    if (naExplosao(areaExplosao, destino)) {
+        matarInimigo(inimigo, pontos, alcanceExplosao);
+        return false;
     }
     return true;
 }
 
-bool perigoDaBomba(Posicao p) {
-    if (!bomba.ativa) return false;
-    return celulaNoAlcance(bomba.posicao, p);
+// Relogio de todos os inimigos, chamado uma vez por tick de logica.
+// tempoMs e quanto tempo real passou desde o tick anterior.
+void moverInimigos(int tempoMs, vector<Inimigo>& lista) {
+    uniform_int_distribution<int> sorteioPausa(PAUSA_INIMIGO_MIN_MS, PAUSA_INIMIGO_MAX_MS);
+
+    for (int i = 0; i < static_cast<int>(lista.size()); i++) {
+        Inimigo& inimigo = lista[i];        // & : trabalha no inimigo real, nao em uma copia
+        if (!inimigo.vivo) continue;
+
+        inimigo.tempoProximoPassoMs -= tempoMs;
+        if (inimigo.tempoProximoPassoMs > 0) continue;   // ainda nao chegou a hora dele
+
+        if (inimigo.passosRestantes == 0) planejarCaminhada(inimigo, i);
+
+        bool andou = inimigo.passosRestantes > 0 && darUmPassoInimigo(inimigo, i);
+        if (andou) inimigo.passosRestantes--;
+        else inimigo.passosRestantes = 0;   // bateu em obstaculo: encerra a caminhada
+
+        // Ainda tem quadrado pela frente -> espera pouco (parece caminhada).
+        // Caminhada terminou -> espera a pausa longa ("de tempos em tempos").
+        inimigo.tempoProximoPassoMs = inimigo.passosRestantes > 0
+                                    ? INTERVALO_PASSO_INIMIGO_MS
+                                    : sorteioPausa(gerador);
+    }
 }
 
-// BFS a partir de `origem` simulando uma bomba plantada ali: existe alguma
-// celula fora do alcance da explosao, alcancavel andando (sem atravessar
-// paredes/inimigos) dentro do tempo que a bomba demora pra explodir? Sem essa
-// checagem, o bot plantava bomba em cantos fechados (comuns perto do spawn,
-// cercados por pilares) e ficava sem para onde fugir, se matando sozinho.
+/* ---------------------------------------------------------------------------
+   9) VITORIA E DERROTA
+   --------------------------------------------------------------------------- */
+
+// [PDF - FUNCIONALIDADE 14] "A condicao de vitoria e atingida corretamente."
+// [PDF - CONDICAO DE VITORIA] "O jogador ira vencer se estiver vivo quando
+//                              todos os inimigos tiverem morrido."
+// O "estiver vivo" e garantido pelo primeiro if: se o estado ja for DERROTA, a
+// funcao sai antes e nunca transforma uma derrota em vitoria.
+void verificarVitoria(const vector<Inimigo>& lista, EstadoJogo& estadoAtual) {
+    if (estadoAtual != JOGANDO) return;
+    if (inimigosVivos(lista) == 0) estadoAtual = VITORIA;
+}
+
+/* ---------------------------------------------------------------------------
+   10) MODO AUTOMATICO (BOT), EXTRA nao pedido no PDF
+
+   O bot usa as MESMAS sub-rotinas do jogador humano (moverJogador e
+   colocarBomba). Ele so decide para onde ir; nenhuma regra e duplicada.
+   --------------------------------------------------------------------------- */
+
+// Esta celula seria atingida por uma bomba plantada em "origemBomba"? Calculo
+// puro, que serve tanto para fugir das bombas reais quanto para o bot simular
+// uma bomba que ele ainda nem plantou.
+bool celulaNoAlcance(const TipoCelula cenario[][COLUNAS], Posicao origemBomba, Posicao p, int alcance) {
+    if (iguais(p, origemBomba)) return true;
+    int dl = p.linha - origemBomba.linha;
+    int dc = p.coluna - origemBomba.coluna;
+    if (dl != 0 && dc != 0) return false;   // fogo so anda em cruz, nunca na diagonal
+    int distancia = abs(dl) + abs(dc);
+    if (distancia > alcance) return false;
+    int passoL = (dl > 0) - (dl < 0);       // -1, 0 ou 1: o sinal da direcao
+    int passoC = (dc > 0) - (dc < 0);
+    for (int i = 1; i <= distancia; i++) {
+        int l = origemBomba.linha + passoL * i;
+        int c = origemBomba.coluna + passoC * i;
+        if (cenario[l][c] == PAREDE_SOLIDA) return false;   // a parede protege
+        if (cenario[l][c] == PAREDE_FRAGIL || cenario[l][c] == PAREDE_BONUS) return i == distancia;
+    }
+    return true;
+}
+
+// A celula esta na mira de ALGUMA bomba que ainda vai explodir?
+bool perigoDaBomba(Posicao p) {
+    for (const Bomba& b : bombas)
+        if (!b.explodindo && celulaNoAlcance(mapa, b.posicao, p, alcanceExplosao)) return true;
+    return false;
+}
+
+// BFS que responde: se eu plantar uma bomba aqui, consigo chegar a alguma
+// celula fora do fogo antes de ela explodir? Sem essa checagem, o bot plantava
+// bomba em cantos fechados e se matava sozinho.
 bool existeFugaSegura(Posicao origem) {
     int passosDisponiveis = TEMPO_BOMBA_MS / INTERVALO_MOVIMENTO_MS;
     const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
     bool visitado[LINHAS][COLUNAS]{};
-    queue<pair<Posicao, int>> fila;
+    queue<pair<Posicao, int>> fila;         // a fila guarda a celula e quantos passos custou
     fila.push({origem, 0});
     visitado[origem.linha][origem.coluna] = true;
     while (!fila.empty()) {
         auto [atual, passos] = fila.front();
         fila.pop();
-        if (!iguais(atual, origem) && !celulaNoAlcance(origem, atual)) return true;
-        if (passos >= passosDisponiveis) continue;
+        if (!iguais(atual, origem) && !celulaNoAlcance(mapa, origem, atual, alcanceExplosao)) return true;
+        if (passos >= passosDisponiveis) continue;   // nao daria tempo de chegar
         for (const auto& direcao : direcoes) {
             Posicao proxima{atual.linha + direcao[0], atual.coluna + direcao[1]};
-            if (!livre(proxima.linha, proxima.coluna) || visitado[proxima.linha][proxima.coluna] ||
-                temInimigo(proxima)) continue;
+            if (!livre(mapa, proxima.linha, proxima.coluna) ||
+                visitado[proxima.linha][proxima.coluna] ||
+                temInimigo(inimigos, proxima)) continue;
             visitado[proxima.linha][proxima.coluna] = true;
             fila.push({proxima, passos + 1});
         }
@@ -497,15 +887,18 @@ bool existeFugaSegura(Posicao origem) {
     return false;
 }
 
-bool alvoParaBomba(Posicao p) {
+// Vale a pena plantar uma bomba nesta celula? Vale se houver parede fragil ou
+// inimigo dentro do alcance da explosao.
+bool alvoParaBomba(const TipoCelula cenario[][COLUNAS], Posicao p, int alcance,
+                   const vector<Inimigo>& lista) {
     const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
     for (int d = 0; d < 4; d++) {
-        for (int distancia = 1; distancia <= alcanceExplosao; distancia++) {
+        for (int distancia = 1; distancia <= alcance; distancia++) {
             int l = p.linha + direcoes[d][0] * distancia;
             int c = p.coluna + direcoes[d][1] * distancia;
-            if (!dentro(l, c) || mapa[l][c] == PAREDE_SOLIDA) break;
-            if (mapa[l][c] == PAREDE_FRAGIL || mapa[l][c] == PAREDE_BONUS) return true;
-            if (temInimigo({l, c})) return true;
+            if (!dentro(l, c) || cenario[l][c] == PAREDE_SOLIDA) break;
+            if (cenario[l][c] == PAREDE_FRAGIL || cenario[l][c] == PAREDE_BONUS) return true;
+            if (temInimigo(lista, {l, c})) return true;
         }
     }
     return false;
@@ -514,10 +907,14 @@ bool alvoParaBomba(Posicao p) {
 // So considera um alvo valido se o bot tambem conseguir fugir de la depois de
 // plantar a bomba; senao o bot ficaria mirando cantos fechados sem escape.
 bool alvoParaBombaSeguro(Posicao p) {
-    return alvoParaBomba(p) && existeFugaSegura(p);
+    return alvoParaBomba(mapa, p, alcanceExplosao, inimigos) && existeFugaSegura(p);
 }
 
-Posicao proximoPassoDoBot() {
+// BFS generico usado duas vezes pelo bot. O parametro "procurarAlvoDeBomba"
+// escolhe o que a busca considera destino:
+//   true  -> a celula mais proxima onde vale a pena plantar uma bomba;
+//   false -> a celula segura mais proxima, para fugir das bombas ja plantadas.
+Posicao proximoPassoDoBot(bool procurarAlvoDeBomba) {
     const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
     bool visitado[LINHAS][COLUNAS]{};
     Posicao anterior[LINHAS][COLUNAS];
@@ -530,15 +927,13 @@ Posicao proximoPassoDoBot() {
     while (!fila.empty() && !encontrou) {
         Posicao atual = fila.front();
         fila.pop();
-        if (alvoParaBombaSeguro(atual)) {
-            objetivo = atual;
-            encontrou = true;
-            break;
-        }
+        bool serve = procurarAlvoDeBomba ? alvoParaBombaSeguro(atual) : !perigoDaBomba(atual);
+        if (serve) { objetivo = atual; encontrou = true; break; }
         for (const auto& direcao : direcoes) {
             Posicao proxima{atual.linha + direcao[0], atual.coluna + direcao[1]};
-            if (!livre(proxima.linha, proxima.coluna) ||
-                visitado[proxima.linha][proxima.coluna] || temInimigo(proxima)) continue;
+            if (!livre(mapa, proxima.linha, proxima.coluna) ||
+                visitado[proxima.linha][proxima.coluna] ||
+                temInimigo(inimigos, proxima)) continue;
             visitado[proxima.linha][proxima.coluna] = true;
             anterior[proxima.linha][proxima.coluna] = atual;
             fila.push(proxima);
@@ -551,99 +946,133 @@ Posicao proximoPassoDoBot() {
     return objetivo;
 }
 
-// BFS ate a celula segura mais proxima (fora do alcance da bomba ativa), no
-// mesmo molde de proximoPassoDoBot. Substitui a fuga antiga, que so olhava 1
-// passo a frente e podia oscilar de volta pra cima da propria bomba.
-Posicao proximoPassoParaFuga() {
-    const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
-    bool visitado[LINHAS][COLUNAS]{};
-    Posicao anterior[LINHAS][COLUNAS];
-    queue<Posicao> fila;
-    fila.push(jogador);
-    visitado[jogador.linha][jogador.coluna] = true;
-    Posicao objetivo = jogador;
-    bool encontrou = false;
-
-    while (!fila.empty() && !encontrou) {
-        Posicao atual = fila.front();
-        fila.pop();
-        if (!perigoDaBomba(atual)) {
-            objetivo = atual;
-            encontrou = true;
-            break;
-        }
-        for (const auto& direcao : direcoes) {
-            Posicao proxima{atual.linha + direcao[0], atual.coluna + direcao[1]};
-            if (!livre(proxima.linha, proxima.coluna) ||
-                visitado[proxima.linha][proxima.coluna] || temInimigo(proxima)) continue;
-            visitado[proxima.linha][proxima.coluna] = true;
-            anterior[proxima.linha][proxima.coluna] = atual;
-            fila.push(proxima);
-        }
-    }
-
-    if (!encontrou || iguais(objetivo, jogador)) return jogador;
-    while (!iguais(anterior[objetivo.linha][objetivo.coluna], jogador))
-        objetivo = anterior[objetivo.linha][objetivo.coluna];
-    return objetivo;
-}
-
+// Decisao do bot a cada tick, em ordem de prioridade:
+//   1. tem bomba no mapa e eu estou na mira?  -> fugir;
+//   2. daqui minha bomba acerta algo e eu escapo? -> plantar;
+//   3. caso contrario -> andar na direcao do alvo mais proximo.
+//
+// O bot planta UMA bomba por vez mesmo depois de pegar a carta DUAS_BOMBAS. A
+// checagem de fuga (existeFugaSegura) simula uma unica bomba; com duas no
+// cenario ela poderia apontar como segura uma celula que a outra bomba cobre.
+// Jogar conservador mantem o modo automatico confiavel na demonstracao.
 void atualizarBot() {
-    // Decide a cada tick de logica (nao mais a cada INTERVALO_BOT_MS), mas o
-    // movimento em si continua pausado pelo mesmo cooldown do jogador manual
-    // (tempoMovimentoMs, dentro de moverJogador). Isso elimina a dessincronia
-    // entre "quando o bot decide" e "quando o jogo deixa mover", que causava
-    // o personagem parecendo travar/bater em paredes no modo automatico.
     if (modo != AUTOMATICO || estado != JOGANDO || tempoMovimentoMs > 0) return;
-    if (bomba.ativa) {
-        if (!perigoDaBomba(jogador)) return;
-        Posicao destino = proximoPassoParaFuga();
-        if (!iguais(destino, jogador)) moverJogador(destino.linha - jogador.linha, destino.coluna - jogador.coluna);
+
+    if (!bombas.empty()) {
+        if (!perigoDaBomba(jogador)) return;         // ja esta seguro: fica parado
+        Posicao destino = proximoPassoDoBot(false);  // false = procurar celula segura
+        if (!iguais(destino, jogador))
+            moverJogador(jogador, destino.linha - jogador.linha, destino.coluna - jogador.coluna);
         return;
     }
     if (alvoParaBombaSeguro(jogador)) {
-        colocarBomba();
+        colocarBomba(bombas, jogador, maxBombas);
         return;
     }
-    Posicao destino = proximoPassoDoBot();
-    if (!iguais(destino, jogador)) moverJogador(destino.linha - jogador.linha, destino.coluna - jogador.coluna);
+    Posicao destino = proximoPassoDoBot(true);       // true = procurar alvo de bomba
+    if (!iguais(destino, jogador))
+        moverJogador(jogador, destino.linha - jogador.linha, destino.coluna - jogador.coluna);
 }
 
+/* ---------------------------------------------------------------------------
+   11) ATUALIZACAO GERAL DA LOGICA
+
+   Esta e a unica funcao chamada pelo timer do Windows. Toda a regra do jogo
+   passa por aqui, sempre na mesma ordem.
+   --------------------------------------------------------------------------- */
+
+// [PDF - FUNCIONALIDADE 1]  Movimento em todas as direcoes.
+// [PDF - FUNCIONALIDADE 4]  "O jogador se move sem bugs."
+// Le o estado REAL das teclas a cada tick, em vez de depender da repeticao
+// automatica do WM_KEYDOWN, que segue o atraso configurado no Windows e dava a
+// sensacao de travamento ao segurar uma tecla.
 void processarMovimentoContinuo() {
-    // Le o estado real das teclas a cada tick de logica, em vez de depender
-    // do WM_KEYDOWN, que segue o delay/taxa de repeticao configurados no
-    // Windows e causa a sensacao de input lag/travamento ao segurar uma tecla.
     if (modo != MANUAL) return;
-    bool cima = teclaPressionada['W'] || teclaPressionada[VK_UP];
-    bool baixo = teclaPressionada['S'] || teclaPressionada[VK_DOWN];
+    bool cima     = teclaPressionada['W'] || teclaPressionada[VK_UP];
+    bool baixo    = teclaPressionada['S'] || teclaPressionada[VK_DOWN];
     bool esquerda = teclaPressionada['A'] || teclaPressionada[VK_LEFT];
-    bool direita = teclaPressionada['D'] || teclaPressionada[VK_RIGHT];
-    if (cima) moverJogador(-1, 0);
-    else if (baixo) moverJogador(1, 0);
-    else if (esquerda) moverJogador(0, -1);
-    else if (direita) moverJogador(0, 1);
+    bool direita  = teclaPressionada['D'] || teclaPressionada[VK_RIGHT];
+    // else-if encadeado: uma direcao por vez, nunca diagonal.
+    if (cima) moverJogador(jogador, -1, 0);
+    else if (baixo) moverJogador(jogador, 1, 0);
+    else if (esquerda) moverJogador(jogador, 0, -1);
+    else if (direita) moverJogador(jogador, 0, 1);
 }
 
 void atualizar(int tempoMs) {
-    if (estado != JOGANDO) return;
-    tempoMovimentoMs = max(0, tempoMovimentoMs - tempoMs);
-    processarMovimentoContinuo();
-    if (modo == AUTOMATICO) atualizarBot();
-    atualizarBomba(tempoMs);
-    moverInimigos(tempoMs);
-    if (temInimigo(jogador)) estado = DERROTA;
-    verificarVitoria();
-    if (modo == AUTOMATICO && estado == DERROTA) reiniciar();
+    if (estado != JOGANDO) return;                          // partida encerrada: nada se move
+    tempoMovimentoMs = max(0, tempoMovimentoMs - tempoMs);  // desconta o cooldown do jogador
+    processarMovimentoContinuo();                           // 1. o jogador anda
+    if (modo == AUTOMATICO) atualizarBot();                 //    (ou o bot decide por ele)
+    atualizarBombas(tempoMs, bombas);                       // 2. as bombas contam e explodem
+    moverInimigos(tempoMs, inimigos);                       // 3. os inimigos andam
+
+    // [PDF - FUNCIONALIDADE 8] Rede de seguranca: se um inimigo terminou o
+    // turno em cima do jogador, e derrota mesmo que nenhum dos dois tenha
+    // detectado a colisao no proprio movimento.
+    if (temInimigo(inimigos, jogador)) estado = DERROTA;
+
+    verificarVitoria(inimigos, estado);                     // 4. acabou?
+    if (modo == AUTOMATICO && estado == DERROTA) reiniciar();  // o bot recomeca sozinho
 }
 
-int inimigosVivos() {
-    int total = 0;
-    for (const Inimigo& inimigo : inimigos) if (inimigo.vivo) total++;
-    return total;
-}
+/* ---------------------------------------------------------------------------
+   12) CAMADA GRAFICA
 
+   Daqui para baixo nao existe mais regra de jogo: este trecho apenas LE o
+   estado e desenha. Essa separacao e o que o PDF chama de boa segmentacao
+   [PDF - TECNICA 4]. Nao ha motor grafico (Unity, SDL, SFML): so Win32, GDI e
+   GDI+, que ja vem com o Windows.
+   --------------------------------------------------------------------------- */
+
+// Estilo da janela: barra de titulo, menu do sistema e botao de minimizar.
+// Nao ha WS_THICKFRAME nem WS_MAXIMIZEBOX porque o tabuleiro tem tamanho
+// fixo, entao esticar a janela so deixaria faixas vazias. A constante fica em
+// uma variavel para ser usada nos dois lugares que precisam dela: ao calcular
+// o tamanho que cabe na tela e ao criar a janela de fato.
+const DWORD ESTILO_JANELA = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+
+// Converte unidade base em pixel real conforme a escala atual.
 int px(int valor) { return static_cast<int>(valor * escalaDpi + 0.5f); }
 
+// Reduz `escalaDpi` se o jogo, no DPI do monitor, nao couber na area de
+// trabalho (a tela menos a barra de tarefas).
+//
+// Por que isso existe: todo desenho passa por px(), que multiplica pela escala
+// do Windows. Num notebook configurado em 125% ou 150%, uma janela de 988x974
+// unidades viraria mais de 1200x1400 pixels reais e ficaria maior que a tela,
+// e o que sairia cortado seria justamente o RODAPE, onde aparecem as mensagens
+// de vitoria e de derrota. Limitando a escala aqui, o jogo se reduz sozinho o
+// quanto for preciso e continua inteiro em qualquer tela, sem que nenhuma
+// outra parte do codigo precise saber disso.
+// A CONTA, separada do Windows para poder ser testada sozinha: dado o espaco
+// que sobra na tela e a escala que o monitor pediu, qual escala usar?
+// Fica com a menor entre "o que cabe na largura" e "o que cabe na altura", e
+// nunca aumenta a escala pedida pelo monitor, so reduz quando preciso.
+float escalaQueCabe(int larguraDisponivel, int alturaDisponivel, float escalaDesejada) {
+    float cabeEmLargura = static_cast<float>(larguraDisponivel) / LARGURA_JOGO;
+    float cabeEmAltura = static_cast<float>(alturaDisponivel) / ALTURA_JOGO;
+    float maximoQueCabe = min(cabeEmLargura, cabeEmAltura);
+    if (maximoQueCabe >= escalaDesejada) return escalaDesejada;  // ja cabe: nao mexe
+    return max(maximoQueCabe, ESCALA_MINIMA);                    // reduz, respeitando o piso
+}
+
+void ajustarEscalaParaCaberNaTela() {
+    RECT areaTrabalho{};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &areaTrabalho, 0)) return;
+
+    // Quanto a moldura da janela (borda + barra de titulo) ocupa por fora.
+    RECT moldura{0, 0, 0, 0};
+    AdjustWindowRect(&moldura, ESTILO_JANELA, FALSE);
+
+    escalaDpi = escalaQueCabe(
+        areaTrabalho.right - areaTrabalho.left - (moldura.right - moldura.left),
+        areaTrabalho.bottom - areaTrabalho.top - (moldura.bottom - moldura.top),
+        escalaDpi);
+}
+
+// Descobre a pasta do executavel, para achar assets/ mesmo se o jogo for
+// aberto de outro diretorio. GetModuleFileNameW e Win32.
 wstring pastaDoExecutavel() {
     wchar_t caminho[MAX_PATH];
     DWORD tamanho = GetModuleFileNameW(nullptr, caminho, MAX_PATH);
@@ -652,27 +1081,28 @@ wstring pastaDoExecutavel() {
     return separador == wstring::npos ? L"." : pasta.substr(0, separador);
 }
 
+// Carrega um PNG com GDI+. Se o arquivo faltar, avisa e devolve nullptr, mas
+// o jogo continua funcionando e desenha duas letras no lugar do sprite.
 unique_ptr<Gdiplus::Image> carregarSprite(const wstring& nome) {
     wstring caminho = pastaDoExecutavel() + L"\\assets\\" + nome;
     auto imagem = make_unique<Gdiplus::Image>(caminho.c_str());
     if (imagem->GetLastStatus() == Gdiplus::Ok) return imagem;
-    // A build legada fica em uma subpasta e compartilha os assets da raiz.
-    wstring caminhoCompartilhado = pastaDoExecutavel() + L"\\..\\assets\\" + nome;
-    imagem = make_unique<Gdiplus::Image>(caminhoCompartilhado.c_str());
-    if (imagem->GetLastStatus() == Gdiplus::Ok) return imagem;
-    wstring mensagem = L"Nao foi possivel carregar o asset:\n" + caminho + L"\nNem em:\n" +
-                       caminhoCompartilhado +
+    wstring mensagem = L"Nao foi possivel carregar o asset:\n" + caminho +
                        L"\n\nO jogo usara uma representacao textual.";
     MessageBoxW(janelaPrincipal, mensagem.c_str(), L"Asset nao encontrado", MB_OK | MB_ICONWARNING);
     return nullptr;
 }
 
+// Os PNGs sao lidos UMA vez, na criacao da janela.
 void carregarAssets() {
     spriteJogador = carregarSprite(L"bomberman.png");
     spriteInimigo = carregarSprite(L"perfil.png");
     spriteBomba = carregarSprite(L"bomba.png");
+    spriteDuasBombas = carregarSprite(L"duas_bombas.png");
+    spriteTeleporte = carregarSprite(L"teleport.png");
 }
 
+// Devolve ao Windows o contexto e o bitmap do buffer duplo (GDI).
 void liberarBuffer() {
     if (bufferDC) { DeleteDC(bufferDC); bufferDC = nullptr; }
     if (bufferBitmap) { DeleteObject(bufferBitmap); bufferBitmap = nullptr; }
@@ -680,16 +1110,21 @@ void liberarBuffer() {
     bufferAltura = 0;
 }
 
+// Libera tudo o que foi alocado na camada grafica, no fechamento da janela.
 void liberarAssets() {
     spriteJogador.reset();
     spriteInimigo.reset();
     spriteBomba.reset();
+    spriteDuasBombas.reset();
+    spriteTeleporte.reset();
     cacheFontes.clear();
     cacheMapa.reset();
     cacheMapaSujo = true;
     cacheSpriteJogador.reset();
     cacheSpriteInimigo.reset();
     cacheSpriteBomba.reset();
+    cacheSpriteDuasBombas.reset();
+    cacheSpriteTeleporte.reset();
     liberarBuffer();
 }
 
@@ -705,24 +1140,22 @@ void garantirBuffer(HDC referencia, int largura, int altura) {
     bufferAltura = altura;
 }
 
+// Fontes GDI+ tambem sao caras de criar; cachear por tamanho em pixels evita
+// recriar uma Font a cada chamada de desenharTexto (varias por frame).
 Gdiplus::Font* obterFonte(int tamanhoPx) {
     auto it = cacheFontes.find(tamanhoPx);
     if (it != cacheFontes.end()) return it->second.get();
-#ifdef VERSAO_LEGADO
-    const wchar_t* nomeFonte = L"Consolas";
-#else
-    const wchar_t* nomeFonte = L"Segoe UI";
-#endif
-    auto fonte = make_unique<Gdiplus::Font>(nomeFonte, tamanhoPx, Gdiplus::FontStyleRegular,
+    auto fonte = make_unique<Gdiplus::Font>(L"Segoe UI", tamanhoPx, Gdiplus::FontStyleRegular,
                                             Gdiplus::UnitPixel);
     Gdiplus::Font* ponteiro = fonte.get();
     cacheFontes[tamanhoPx] = move(fonte);
     return ponteiro;
 }
 
+// Escreve texto na tela com GDI+ (DrawString).
 void desenharTexto(Gdiplus::Graphics& g, const wstring& texto, float x, float y,
                    float tamanho, Gdiplus::Color cor, bool centralizado = false) {
-    Gdiplus::Font* fonte = obterFonte(px(static_cast<int>(tamanho)));
+    Gdiplus::Font* fonte = obterFonte(max(1, px(static_cast<int>(tamanho))));
     Gdiplus::SolidBrush pincel(cor);
     Gdiplus::StringFormat formato;
     if (centralizado) formato.SetAlignment(Gdiplus::StringAlignmentCenter);
@@ -731,14 +1164,14 @@ void desenharTexto(Gdiplus::Graphics& g, const wstring& texto, float x, float y,
     g.DrawString(texto.c_str(), -1, fonte, area, &formato, &pincel);
 }
 
-// O sprite dos inimigos (perfil.png) veio na versao V2 com 1254x1254px.
-// Reamostrar essa imagem gigante toda vez que um inimigo e desenhado (ate 6x
-// por frame, mais jogador e bomba) e o que estava consumindo ~90ms/frame de
-// CPU. A solucao e reamostrar uma unica vez para o tamanho final de tela e
-// reaproveitar esse resultado pequeno em todos os frames seguintes.
+// Reduz o PNG original ao tamanho exato da celula UMA unica vez e guarda o
+// resultado. O sprite dos inimigos tem 1254x1254 pixels; reamostrar essa
+// imagem toda vez que um inimigo e desenhado (ate 8x por frame) consumia
+// ~90ms/frame de CPU e travava o teclado. Cada sprite e reamostrado uma vez e
+// reaproveitado em todos os quadros seguintes.
 Gdiplus::Bitmap* prepararSpriteEscalado(unique_ptr<Gdiplus::Bitmap>& cache, Gdiplus::Image* origem) {
     int margem = px(4);
-    float disponivel = static_cast<float>(px(TAMANHO_CELULA) - 2 * margem);
+    float disponivel = static_cast<float>(max(1, px(TAMANHO_CELULA) - 2 * margem));
     float escala = min(disponivel / origem->GetWidth(), disponivel / origem->GetHeight());
     int largura = max(1, static_cast<int>(origem->GetWidth() * escala + 0.5f));
     int altura = max(1, static_cast<int>(origem->GetHeight() * escala + 0.5f));
@@ -753,7 +1186,10 @@ Gdiplus::Bitmap* prepararSpriteEscalado(unique_ptr<Gdiplus::Bitmap>& cache, Gdip
     return cache.get();
 }
 
-void desenharSpriteNaCelula(Gdiplus::Graphics& g, Gdiplus::Image* imagem, unique_ptr<Gdiplus::Bitmap>& cacheEscalado,
+// Desenha um sprite centralizado na celula (linha, coluna). Se o PNG nao
+// carregou, escreve as duas letras de fallback no lugar.
+void desenharSpriteNaCelula(Gdiplus::Graphics& g, Gdiplus::Image* imagem,
+                            unique_ptr<Gdiplus::Bitmap>& cacheEscalado,
                             int linha, int coluna, const wchar_t* fallback) {
     int xCelula = px(coluna * TAMANHO_CELULA);
     int yCelula = px(ALTURA_CABECALHO + linha * TAMANHO_CELULA);
@@ -771,49 +1207,45 @@ void desenharSpriteNaCelula(Gdiplus::Graphics& g, Gdiplus::Image* imagem, unique
     g.DrawImage(pronto, x, y, largura, altura);
 }
 
-// So o terreno (paredes/chao), sem a sobreposicao de explosao: isso e o que
-// vai para o bitmap cacheado, ja que muda raramente (so quando uma bomba
-// destroi uma parede ou o jogo reinicia). Coordenadas relativas ao proprio
-// cache (sem o deslocamento do cabecalho).
-void desenharTerrenoCelula(Gdiplus::Graphics& g, int l, int c) {
+// [PDF - BOMBA] "Considere: o quadrado cinza parede solida; o quadrado azul
+// parede fragil; o laranja explosao; e o preto a bomba."
+// Cores do terreno, na convencao pedida pelo enunciado. FillRectangle,
+// DrawRectangle, SolidBrush e Pen sao GDI+.
+void desenharTerrenoCelula(Gdiplus::Graphics& g, const TipoCelula cenario[][COLUNAS], int l, int c) {
     int x = px(c * TAMANHO_CELULA);
     int y = px(l * TAMANHO_CELULA);
     int lado = px(TAMANHO_CELULA);
     Gdiplus::Color cor;
-#ifdef VERSAO_LEGADO
-    if (mapa[l][c] == PAREDE_SOLIDA) cor = Gdiplus::Color(255, 128, 128, 128);
-    else if (mapa[l][c] == PAREDE_FRAGIL) cor = Gdiplus::Color(255, 0, 70, 180);
-    else if (mapa[l][c] == PAREDE_BONUS) cor = Gdiplus::Color(255, 205, 165, 0);
-    else cor = Gdiplus::Color(255, 0, 128, 0);
-#else
-    if (mapa[l][c] == PAREDE_SOLIDA) cor = Gdiplus::Color(255, 105, 110, 115);
-    else if (mapa[l][c] == PAREDE_FRAGIL) cor = Gdiplus::Color(255, 45, 105, 180);
-    else if (mapa[l][c] == PAREDE_BONUS) cor = Gdiplus::Color(255, 225, 175, 40);
-    else cor = Gdiplus::Color(255, 38, 128, 67);
-#endif
+    if (cenario[l][c] == PAREDE_SOLIDA) cor = Gdiplus::Color(255, 105, 110, 115);       // cinza
+    else if (cenario[l][c] == PAREDE_FRAGIL) cor = Gdiplus::Color(255, 45, 105, 180);   // azul
+    else if (cenario[l][c] == PAREDE_BONUS) cor = Gdiplus::Color(255, 225, 175, 40);    // dourado
+    else cor = Gdiplus::Color(255, 38, 128, 67);                                        // chao verde
+
     Gdiplus::SolidBrush fundo(cor);
     g.FillRectangle(&fundo, x, y, lado, lado);
     Gdiplus::Pen grade(Gdiplus::Color(100, 20, 35, 25), max(1, px(1)));
     g.DrawRectangle(&grade, x, y, lado - 1, lado - 1);
-    if (mapa[l][c] == PAREDE_SOLIDA) {
+    if (cenario[l][c] == PAREDE_SOLIDA) {   // risco claro no meio da parede solida
         Gdiplus::Pen detalhe(Gdiplus::Color(150, 210, 215, 220), max(1, px(1)));
         g.DrawLine(&detalhe, x + px(5), y + lado / 2, x + lado - px(5), y + lado / 2);
     }
-    if (mapa[l][c] == PAREDE_BONUS) {
+    if (cenario[l][c] == PAREDE_BONUS) {    // circulo que denuncia o bloco especial
         Gdiplus::Pen detalhe(Gdiplus::Color(220, 255, 255, 255), max(1, px(2)));
         g.DrawEllipse(&detalhe, x + px(10), y + px(10), lado - px(20), lado - px(20));
     }
 }
 
-// A explosao muda a cada frame (avanca, expande, termina), entao nao pode
-// entrar no cache do terreno; e desenhada por cima, mas so nas poucas
-// celulas realmente afetadas (no maximo ~25), nao no grid inteiro.
-void desenharExplosaoOverlay(Gdiplus::Graphics& g) {
-    if (areaExplosao.empty()) return;
-    Gdiplus::SolidBrush pincel(Gdiplus::Color(255, 255, 158, 35));
+// [PDF - FUNCIONALIDADE 13] "A explosao da bomba devera ser visivel."
+// [PDF - BOMBA] "o laranja explosao"
+// Pinta de laranja cada celula do vetor areaExplosao (que ja reune as chamas de
+// todas as bombas que estao explodindo). Isso e desenhado POR CIMA do terreno,
+// e nao dentro do cache, porque a explosao muda a cada quadro.
+void desenharExplosaoOverlay(Gdiplus::Graphics& g, const vector<Posicao>& area) {
+    if (area.empty()) return;
+    Gdiplus::SolidBrush pincel(Gdiplus::Color(255, 255, 158, 35));   // <- a cor da explosao
     Gdiplus::Pen grade(Gdiplus::Color(100, 20, 35, 25), max(1, px(1)));
     int lado = px(TAMANHO_CELULA);
-    for (const Posicao& p : areaExplosao) {
+    for (const Posicao& p : area) {
         int x = px(p.coluna * TAMANHO_CELULA);
         int y = px(ALTURA_CABECALHO + p.linha * TAMANHO_CELULA);
         g.FillRectangle(&pincel, x, y, lado, lado);
@@ -821,25 +1253,30 @@ void desenharExplosaoOverlay(Gdiplus::Graphics& g) {
     }
 }
 
+// Desenha uma carta caida no chao: um halo claro para destacar do chao verde e,
+// por cima, o PNG da carta (duas_bombas.png ou teleport.png).
 void desenharItem(Gdiplus::Graphics& g, const Item& item) {
     int x = px(item.posicao.coluna * TAMANHO_CELULA);
     int y = px(ALTURA_CABECALHO + item.posicao.linha * TAMANHO_CELULA);
     int lado = px(TAMANHO_CELULA);
-    Gdiplus::Color cor = item.tipo == CHUTE ? Gdiplus::Color(255, 235, 120, 40)
-                                            : Gdiplus::Color(255, 80, 200, 235);
-    Gdiplus::SolidBrush pincel(cor);
-    int margem = px(8);
-    g.FillEllipse(&pincel, x + margem, y + margem, lado - 2 * margem, lado - 2 * margem);
-    desenharTexto(g, item.tipo == CHUTE ? L"E" : L"T", item.posicao.coluna * TAMANHO_CELULA + 16,
-                  ALTURA_CABECALHO + item.posicao.linha * TAMANHO_CELULA + 12, 18,
-                  Gdiplus::Color(255, 20, 20, 20));
+
+    Gdiplus::SolidBrush halo(Gdiplus::Color(90, 255, 255, 255));
+    int margem = max(1, px(3));
+    g.FillEllipse(&halo, x + margem, y + margem, lado - 2 * margem, lado - 2 * margem);
+
+    if (item.tipo == DUAS_BOMBAS)
+        desenharSpriteNaCelula(g, spriteDuasBombas.get(), cacheSpriteDuasBombas,
+                               item.posicao.linha, item.posicao.coluna, L"2B");
+    else
+        desenharSpriteNaCelula(g, spriteTeleporte.get(), cacheSpriteTeleporte,
+                               item.posicao.linha, item.posicao.coluna, L"TP");
 }
 
+// Desenha o tabuleiro inteiro, na ordem de tras para frente:
+// terreno -> explosao -> itens -> bombas -> inimigos -> jogador.
+// O terreno so e redesenhado quando o mapa muda de verdade; nos demais quadros
+// e um unico DrawImage do bitmap ja pronto.
 void desenharMapa(Gdiplus::Graphics& g) {
-    // O terreno (195 celulas) so muda quando uma bomba destroi parede ou o
-    // jogo reinicia (cacheMapaSujo). Nos demais frames (a grande maioria)
-    // reaproveita o bitmap ja pronto: 1 DrawImage em vez de ~400 chamadas
-    // GDI+ por frame, que era o gargalo real de CPU/lentidao.
     int larguraGrid = px(LARGURA_JOGO);
     int alturaGrid = px(LINHAS * TAMANHO_CELULA);
     if (cacheMapaSujo || !cacheMapa || static_cast<int>(cacheMapa->GetWidth()) != larguraGrid ||
@@ -848,91 +1285,98 @@ void desenharMapa(Gdiplus::Graphics& g) {
         Gdiplus::Graphics gCache(cacheMapa.get());
         gCache.SetSmoothingMode(Gdiplus::SmoothingModeNone);
         for (int l = 0; l < LINHAS; l++)
-            for (int c = 0; c < COLUNAS; c++) desenharTerrenoCelula(gCache, l, c);
+            for (int c = 0; c < COLUNAS; c++) desenharTerrenoCelula(gCache, mapa, l, c);
         cacheMapaSujo = false;
     }
     g.DrawImage(cacheMapa.get(), 0, px(ALTURA_CABECALHO));
-    desenharExplosaoOverlay(g);
+
+    desenharExplosaoOverlay(g, areaExplosao);
     for (const Item& item : itensNoChao) desenharItem(g, item);
-    if (bomba.ativa && !bomba.explodindo)
-        desenharSpriteNaCelula(g, spriteBomba.get(), cacheSpriteBomba, bomba.posicao.linha, bomba.posicao.coluna, L"BO");
+
+    // Cada bomba so aparece enquanto nao explodiu; depois quem aparece e o fogo.
+    for (const Bomba& b : bombas)
+        if (!b.explodindo)
+            desenharSpriteNaCelula(g, spriteBomba.get(), cacheSpriteBomba,
+                                   b.posicao.linha, b.posicao.coluna, L"BO");
+
     for (const Inimigo& inimigo : inimigos)
-        if (inimigo.vivo) desenharSpriteNaCelula(g, spriteInimigo.get(), cacheSpriteInimigo, inimigo.posicao.linha,
-                                                  inimigo.posicao.coluna, L"IN");
-    desenharSpriteNaCelula(g, spriteJogador.get(), cacheSpriteJogador, jogador.linha, jogador.coluna, L"PJ");
+        if (inimigo.vivo)
+            desenharSpriteNaCelula(g, spriteInimigo.get(), cacheSpriteInimigo,
+                                   inimigo.posicao.linha, inimigo.posicao.coluna, L"IN");
+    // O jogador e desenhado por ultimo para ficar por cima de tudo.
+    desenharSpriteNaCelula(g, spriteJogador.get(), cacheSpriteJogador,
+                           jogador.linha, jogador.coluna, L"PJ");
 }
 
+// Faixa superior: titulo, placar, inimigos restantes e aviso das bombas.
 void desenharHUD(Gdiplus::Graphics& g) {
-#ifdef VERSAO_LEGADO
-    Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 0, 0, 0));
-#else
     Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 20, 28, 38));
-#endif
     g.FillRectangle(&fundo, 0, 0, px(LARGURA_JOGO), px(ALTURA_CABECALHO));
-#ifdef VERSAO_LEGADO
-    desenharTexto(g, L"+--------- BOMBERMAN LEGADO ---------+", 0, 8, 24,
-                  Gdiplus::Color(255, 0, 220, 235), true);
-#else
     desenharTexto(g, L"BOMBERMAN", 0, 8, 29, Gdiplus::Color(255, 65, 210, 235), true);
-#endif
-    wstring dados = L"Pontos: " + to_wstring(pontos) + L"  Inimigos: " + to_wstring(inimigosVivos()) +
-                    L"  Raio bomba: " + to_wstring(alcanceExplosao);
+
+    wstring dados = L"Pontos: " + to_wstring(pontos) +
+                    L"  Inimigos: " + to_wstring(inimigosVivos(inimigos)) +
+                    L"  Raio bomba: " + to_wstring(alcanceExplosao) +
+                    L"  Bombas: " + to_wstring(bombas.size()) + L"/" + to_wstring(maxBombas);
     if (modo == AUTOMATICO) dados += L"  AUTO 1,25x";
-    if (possuiCartaChute) dados += L"  [E] Chute";
+    if (maxBombas > MAX_BOMBAS_INICIAL) dados += L"  [DUAS BOMBAS]";
     if (possuiCartaTeleporte) dados += L"  [T] Teleporte";
     desenharTexto(g, dados, 18, 50, 15, Gdiplus::Color(255, 245, 245, 245));
+
+    // Mostra a contagem da bomba que vai explodir primeiro.
     wstring aviso = L"Espaco coloca uma bomba";
-    if (bomba.ativa && !bomba.explodindo)
-        aviso = L"Bomba explode em: " + to_wstring((bomba.tempoMs + 999) / 1000) + L"s";
-    else if (bomba.explodindo) aviso = L"BOOM! Afaste-se das chamas!";
+    int menorTempo = -1;
+    bool alguemExplodindo = false;
+    for (const Bomba& b : bombas) {
+        if (b.explodindo) alguemExplodindo = true;
+        else if (menorTempo < 0 || b.tempoMs < menorTempo) menorTempo = b.tempoMs;
+    }
+    if (menorTempo >= 0) aviso = L"Bomba explode em: " + to_wstring((menorTempo + 999) / 1000) + L"s";
+    else if (alguemExplodindo) aviso = L"BOOM! Afaste-se das chamas!";
     desenharTexto(g, aviso, 18, 76, 15, Gdiplus::Color(255, 255, 210, 85));
 }
 
+// Faixa inferior: lista de teclas, regra das cartas e a mensagem de vitoria
+// ou derrota.
+// [PDF - FUNCIONALIDADE 14 / 15] E aqui que o resultado da partida aparece
+// para o jogador.
+//
+// A segunda linha explica o bloco dourado (PAREDE_BONUS) para quem esta vendo
+// o jogo pela primeira vez: sem essa explicacao, a regra das cartas so fica
+// clara depois de o jogador quebrar um bloco por acaso e ler o HUD.
 void desenharRodape(Gdiplus::Graphics& g) {
     int y = ALTURA_CABECALHO + LINHAS * TAMANHO_CELULA;
-#ifdef VERSAO_LEGADO
-    Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 0, 0, 0));
-#else
     Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 20, 28, 38));
-#endif
     g.FillRectangle(&fundo, 0, px(y), px(LARGURA_JOGO), px(ALTURA_RODAPE));
-    desenharTexto(g, L"WASD/SETAS: mover  ESPACO: bomba  E: chutar bomba  T: teletransportar  R: reiniciar  M: menu  Q/ESC: sair",
-                  12, y + 8, 13, Gdiplus::Color(255, 225, 230, 235), true);
+    desenharTexto(g, L"WASD/SETAS: mover   ESPACO: bomba   T: teletransportar   R: reiniciar   M: menu   Q/ESC: sair",
+                  12, y + 6, 12, Gdiplus::Color(255, 225, 230, 235), true);
+    desenharTexto(g, L"BLOCO DOURADO: quebre para soltar uma carta, bomba dupla (2 bombas) ou teleporte (tecla T)",
+                  12, y + 27, 12, Gdiplus::Color(255, 175, 210, 235), true);
     if (estado == VITORIA)
-        desenharTexto(g, L"VOCE VENCEU! Pressione R.", 12, y + 37, 18,
+        desenharTexto(g, L"VOCE VENCEU! Pressione R.", 12, y + 52, 17,
                       Gdiplus::Color(255, 90, 225, 120), true);
     else if (estado == DERROTA)
-        desenharTexto(g, L"GAME OVER! Pressione R.", 12, y + 37, 18,
+        desenharTexto(g, L"GAME OVER! Pressione R.", 12, y + 52, 17,
                       Gdiplus::Color(255, 245, 85, 85), true);
 }
 
+// Tela inicial com a escolha do modo de jogo.
 void desenharMenu(Gdiplus::Graphics& g) {
-#ifdef VERSAO_LEGADO
-    Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 0, 0, 0));
-#else
     Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 20, 28, 38));
-#endif
     g.FillRectangle(&fundo, 0, 0, px(LARGURA_JOGO), px(ALTURA_JOGO));
-#ifdef VERSAO_LEGADO
-    desenharTexto(g, L"+----------------------------------+", 20, 85, 26,
-                  Gdiplus::Color(255, 0, 220, 235), true);
-    desenharTexto(g, L"|       BOMBERMAN LEGADO          |", 20, 130, 30,
-                  Gdiplus::Color(255, 0, 220, 235), true);
-    desenharTexto(g, L"+----------------------------------+", 20, 180, 26,
-                  Gdiplus::Color(255, 0, 220, 235), true);
-#else
-    desenharTexto(g, L"BOMBERMAN", 20, 130, 42, Gdiplus::Color(255, 65, 210, 235), true);
-#endif
-    desenharTexto(g, L"ESCOLHA O MODO DE JOGO", 20, 230, 21,
+    desenharTexto(g, L"BOMBERMAN", 20, 150, 42, Gdiplus::Color(255, 65, 210, 235), true);
+    desenharTexto(g, L"ESCOLHA O MODO DE JOGO", 20, 255, 21,
                   Gdiplus::Color(255, 245, 245, 245), true);
-    desenharTexto(g, L"[1] Jogar manualmente", 20, 305, 24,
+    desenharTexto(g, L"[1] Jogar manualmente", 20, 330, 24,
                   Gdiplus::Color(255, 90, 225, 120), true);
-    desenharTexto(g, L"[2] Jogo automatico 1,25x", 20, 365, 24,
+    desenharTexto(g, L"[2] Jogo automatico 1,25x", 20, 390, 24,
                   Gdiplus::Color(255, 255, 210, 85), true);
-    desenharTexto(g, L"[Q ou ESC] Sair", 20, 445, 18,
+    desenharTexto(g, L"[Q ou ESC] Sair", 20, 470, 18,
                   Gdiplus::Color(255, 205, 210, 215), true);
 }
 
+// Monta o quadro inteiro fora da tela e copia de uma vez (BUFFER DUPLO).
+// Sem isso, o usuario veria a janela sendo apagada e repintada por partes.
 void desenhar(HWND janela) {
     PAINTSTRUCT ps;
     HDC destino = BeginPaint(janela, &ps);
@@ -953,114 +1397,147 @@ void desenhar(HWND janela) {
     EndPaint(janela, &ps);
 }
 
+/* ---------------------------------------------------------------------------
+   13) JANELA, TECLADO E PONTO DE ENTRADA (Win32)
+   --------------------------------------------------------------------------- */
+
+// Acoes de toque unico (bomba, teleporte, reiniciar, menu, sair). O movimento
+// NAO vem por aqui: ele e lido em processarMovimentoContinuo, a cada tick.
 void lerTeclado(WPARAM tecla, LPARAM lParam) {
-    // Bit 30 do lParam indica auto-repeticao do SO; ignoramos para acoes
-    // pontuais (senao segurar R/espaco dispara a acao varias vezes por
-    // segundo na taxa de repeticao do teclado, fora do controle do jogo).
+    // Bit 30 do lParam indica que o Windows esta repetindo a tecla segurada.
+    // Ignoramos, senao segurar espaco tentaria plantar bomba varias vezes por segundo.
     bool repetida = (lParam & (1 << 30)) != 0;
     if (repetida) return;
+
     if (modo == MENU) {
-        // Aceita tanto os numeros da fileira superior quanto o teclado
-        // numerico (numpad), que usa codigos de tecla virtuais diferentes.
         if (tecla == '1' || tecla == VK_NUMPAD1) iniciarPartida(MANUAL);
         else if (tecla == '2' || tecla == VK_NUMPAD2) iniciarPartida(AUTOMATICO);
         else if (tecla == 'Q' || tecla == VK_ESCAPE) DestroyWindow(janelaPrincipal);
         return;
     }
+
     if (tecla == 'M') modo = MENU;
-    else if (tecla == ' ') colocarBomba();
-    else if (tecla == 'E') chutarBomba();
+    else if (tecla == ' ') colocarBomba(bombas, jogador, maxBombas);   // [PDF - FUNCIONALIDADE 5]
     else if (tecla == 'T') teletransportarJogador();
     else if (tecla == 'R') reiniciar();
     else if (tecla == 'Q' || tecla == VK_ESCAPE) DestroyWindow(janelaPrincipal);
 }
 
-void atualizarEscalaDpi(HWND janela) {
-    escalaDpi = GetDpiForWindow(janela) / 96.0f;
-    cacheFontes.clear();
+// Ajusta a janela ao tamanho que a escala atual pede, mantendo a area util
+// exatamente com LARGURA_JOGO x ALTURA_JOGO unidades.
+void aplicarTamanhoDaJanela(HWND janela) {
+    RECT area{0, 0, px(LARGURA_JOGO), px(ALTURA_JOGO)};
+    AdjustWindowRect(&area, ESTILO_JANELA, FALSE);
+    SetWindowPos(janela, nullptr, 0, 0, area.right - area.left, area.bottom - area.top,
+                 SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
 }
 
+// Recalcula a escala quando a janela muda de monitor ou de DPI, sempre
+// respeitando o limite de espaco da tela.
+void atualizarEscalaDpi(HWND janela) {
+    escalaDpi = GetDpiForWindow(janela) / 96.0f;    // 96 DPI = 100%
+    ajustarEscalaParaCaberNaTela();                 // e nunca maior do que cabe
+    cacheFontes.clear();                            // as fontes ficaram do tamanho errado
+    invalidarCacheMapa();                           // o terreno tambem muda de tamanho
+}
+
+// Callback da Win32: o Windows chama esta funcao para cada evento da janela.
+// Toda a comunicacao entre o sistema e o jogo passa por aqui, nenhum evento
+// chega por outro caminho.
 LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LPARAM lParam) {
-    static auto ultimoInstante = chrono::steady_clock::now();
+    static auto ultimoInstante = chrono::steady_clock::now();   // <chrono>
     switch (mensagem) {
-    case WM_CREATE:
+    case WM_CREATE:                 // a janela acabou de nascer
         janelaPrincipal = janela;
         atualizarEscalaDpi(janela);
+        aplicarTamanhoDaJanela(janela);     // ajusta caso o DPI da janela difira do sistema
         carregarAssets();
-        SetTimer(janela, 1, PASSO_LOGICA_MS, nullptr);
+        SetTimer(janela, 1, PASSO_LOGICA_MS, nullptr);  // dispara WM_TIMER a cada 25 ms
         return 0;
-    case WM_TIMER: {
+
+    case WM_TIMER: {                // batida do relogio: hora de atualizar a logica
         auto agora = chrono::steady_clock::now();
-        int decorrido = static_cast<int>(chrono::duration_cast<chrono::milliseconds>(agora - ultimoInstante).count());
+        // Mede o tempo REAL decorrido em vez de supor 25 ms: se o computador
+        // engasgar, o jogo continua no mesmo ritmo.
+        int decorrido = static_cast<int>(
+            chrono::duration_cast<chrono::milliseconds>(agora - ultimoInstante).count());
         ultimoInstante = agora;
-        double multiplicador = modo == AUTOMATICO ? 1.25 : 1.0;
+        double multiplicador = modo == AUTOMATICO ? 1.25 : 1.0;  // o bot joga acelerado
         atualizar(static_cast<int>(min(decorrido, 100) * multiplicador));
-        InvalidateRect(janela, nullptr, FALSE);
+        InvalidateRect(janela, nullptr, FALSE);     // pede um WM_PAINT
         return 0;
     }
-    case WM_KEYDOWN:
+
+    case WM_KEYDOWN:                // tecla pressionada
         if (wParam < 256) teclaPressionada[wParam] = true;
         lerTeclado(wParam, lParam);
         InvalidateRect(janela, nullptr, FALSE);
         return 0;
-    case WM_KEYUP:
+
+    case WM_KEYUP:                  // tecla solta
         if (wParam < 256) teclaPressionada[wParam] = false;
         return 0;
-    case WM_PAINT:
+
+    case WM_PAINT:                  // o Windows quer o conteudo da janela
         desenhar(janela);
         return 0;
-    case WM_ERASEBKGND:
+
+    case WM_ERASEBKGND:             // nos ja pintamos o fundo inteiro: evita piscar
         return 1;
-    case WM_DPICHANGED: {
+
+    case WM_DPICHANGED: {           // a janela foi para um monitor com outra escala
         RECT* sugerido = reinterpret_cast<RECT*>(lParam);
-        SetWindowPos(janela, nullptr, sugerido->left, sugerido->top,
-                     sugerido->right - sugerido->left, sugerido->bottom - sugerido->top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
-        atualizarEscalaDpi(janela);
+        SetWindowPos(janela, nullptr, sugerido->left, sugerido->top, 0, 0,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
+        atualizarEscalaDpi(janela);         // recalcula a escala, ja limitada a tela
+        aplicarTamanhoDaJanela(janela);     // e redimensiona de acordo
         return 0;
     }
-    case WM_KILLFOCUS:
+
+    case WM_KILLFOCUS:              // a janela perdeu o foco: esquece as teclas
         fill(begin(teclaPressionada), end(teclaPressionada), false);
         return 0;
-    case WM_DESTROY:
-        executando = false;
+
+    case WM_DESTROY:                // fechando: devolve tudo ao sistema
         KillTimer(janela, 1);
         liberarAssets();
         PostQuitMessage(0);
         return 0;
     }
-    return DefWindowProcW(janela, mensagem, wParam, lParam);
+    return DefWindowProcW(janela, mensagem, wParam, lParam);   // o padrao cuida do resto
 }
 
+// Avisa ao Windows que o programa sabe lidar com telas de alta densidade.
 void tornarAplicacaoDpiAware() {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 }
 
+// Ponto de entrada de um programa com janela no Windows (equivale ao main()).
 int WINAPI WinMain(HINSTANCE instancia, HINSTANCE, LPSTR, int exibir) {
     tornarAplicacaoDpiAware();
     escalaDpi = GetDpiForSystem() / 96.0f;
+    ajustarEscalaParaCaberNaTela();     // nunca maior do que cabe na area de trabalho
+
+    // Abre a sessao do GDI+ antes de qualquer imagem ser carregada.
     Gdiplus::GdiplusStartupInput entradaGdiPlus;
     if (Gdiplus::GdiplusStartup(&tokenGdiPlus, &entradaGdiPlus, nullptr) != Gdiplus::Ok) return 1;
 
-#ifdef VERSAO_LEGADO
-    const wchar_t CLASSE[] = L"BombermanUnivaliLegado";
-    const wchar_t TITULO[] = L"Bomberman Legado - Algoritmos e Programacao II";
-#else
+    // Registra o "molde" da janela, dizendo qual funcao trata as mensagens.
     const wchar_t CLASSE[] = L"BombermanUnivali";
     const wchar_t TITULO[] = L"Bomberman - Algoritmos e Programacao II";
-#endif
     WNDCLASSW classe{};
-    classe.lpfnWndProc = processarMensagem;
+    classe.lpfnWndProc = processarMensagem;     // <- nosso callback
     classe.hInstance = instancia;
     classe.lpszClassName = CLASSE;
     classe.hCursor = LoadCursor(nullptr, IDC_ARROW);
     classe.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     RegisterClassW(&classe);
 
+    // Calcula o tamanho externo da janela para que a AREA UTIL fique exatamente
+    // com LARGURA_JOGO x ALTURA_JOGO (a borda e a barra de titulo somam por fora).
     RECT area{0, 0, px(LARGURA_JOGO), px(ALTURA_JOGO)};
-    AdjustWindowRect(&area, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
-    HWND janela = CreateWindowExW(0, CLASSE, TITULO,
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+    AdjustWindowRect(&area, ESTILO_JANELA, FALSE);
+    HWND janela = CreateWindowExW(0, CLASSE, TITULO, ESTILO_JANELA,
         CW_USEDEFAULT, CW_USEDEFAULT, area.right - area.left, area.bottom - area.top,
         nullptr, nullptr, instancia, nullptr);
     if (!janela) {

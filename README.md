@@ -1,10 +1,8 @@
-# Bomberman — Algoritmos e Programação II
+# Bomberman: Algoritmos e Programação II
 
 Trabalho M1 da disciplina de Algoritmos e Programação II da UNIVALI, desenvolvido por Diego Silva e Gabriel Bianchessi.
 
 O jogo usa uma janela nativa do Windows. A lógica continua em C++ com matriz, structs, vetores e sub-rotinas; a apresentação usa Win32, GDI e GDI+ para desenhar o mapa e os sprites PNG com transparência.
-
-Esta raiz contém a **versão moderna**. Uma segunda build com aparência clássica ampliada está disponível em [`legado/`](legado/README.md). As duas usam a mesma lógica e os mesmos assets, mas possuem fontes de entrada, scripts de compilação, executáveis e documentos próprios.
 
 ## Tecnologias da interface gráfica
 
@@ -78,10 +76,14 @@ No PowerShell, dentro da pasta do projeto:
 powershell -ExecutionPolicy Bypass -File .\compilar.ps1
 ```
 
+`compilar.ps1` é a forma recomendada de compilar: ele localiza o `g++` no `Path` ou na instalação
+MSYS2, usa C++17 com otimização e avisos, gera `bomberman.exe` na pasta do projeto e informa um
+erro claro se a compilação falhar.
+
 O comando equivalente é:
 
 ```powershell
-g++ -std=c++17 -Wall -Wextra -pedantic bomberman.cpp -o bomberman.exe -lgdiplus -mwindows
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic bomberman.cpp -o bomberman.exe -lgdiplus -mwindows
 ```
 
 Se `g++` não estiver no `Path`, o script tenta automaticamente `C:\msys64\ucrt64\bin\g++.exe`. Caso precise instalar o compilador, abra o terminal MSYS2 UCRT64 e execute:
@@ -99,29 +101,63 @@ Se a compilação informar que `bomberman.exe` está em uso, feche uma instânci
 .\bomberman.exe
 ```
 
-A janela abre com tamanho calculado a partir de células de 52×52 pixels, além de áreas reservadas ao cabeçalho e ao rodapé. Em escala de 100%, sua área útil é de 780×852 pixels. O programa é DPI-aware e reajusta desenho, texto e sprites de acordo com a escala do Windows.
+O tabuleiro tem 15×19 células de 52×52 unidades, mais cabeçalho e rodapé: 988×974 unidades de área útil em escala de 100%.
+
+O programa é DPI-aware e, antes de criar a janela, `ajustarEscalaParaCaberNaTela()` compara o tamanho pedido com a área de trabalho do monitor. Se não couber, por exemplo em um notebook com escala de 125% ou 150%, a escala é reduzida automaticamente até o jogo caber inteiro. Assim o rodapé, onde aparecem as mensagens de vitória e derrota, nunca fica fora da tela.
 
 Os assets são procurados relativamente ao executável:
 
 - `assets/bomberman.png`: jogador;
 - `assets/perfil.png`: inimigos;
-- `assets/bomba.png`: bomba.
+- `assets/bomba.png`: bomba;
+- `assets/duas_bombas.png`: carta que libera a segunda bomba;
+- `assets/teleport.png`: carta de teleporte.
 
-Eles são carregados uma única vez na inicialização. Se algum arquivo não estiver disponível, o jogo informa o caminho e usa `PJ`, `IN` ou `BO` como fallback, sem encerrar inesperadamente.
+Eles são carregados uma única vez na inicialização. Se algum arquivo não estiver disponível, o jogo informa o caminho e desenha duas letras no lugar do sprite, sem encerrar inesperadamente.
 
 ## Menu e controles
+
+### Telas do jogo
+
+Menu inicial:
+
+![Menu inicial do Bomberman](assets/tela-menu.png)
+
+Partida recém-iniciada, com os sete inimigos e os dois blocos dourados:
+
+![Partida inicial do Bomberman](assets/tela-partida-inicial.png)
+
+Carta de duas bombas no chão:
+
+![Carta de duas bombas no Bomberman](assets/tela-partida-duas-bombas.png)
+
+Carta de teleporte no chão após a coleta da carta de duas bombas:
+
+![Carta de teleporte no Bomberman](assets/tela-partida-duas-teleportar.png)
 
 | Tecla | Ação |
 | --- | --- |
 | `1` no menu | Iniciar modo manual |
-| `2` no menu | Iniciar modo automático 1,5x |
+| `2` no menu | Iniciar modo automático 1,25x |
 | `W`, `A`, `S`, `D` ou setas | Movimentar o jogador |
 | `Espaço` | Colocar uma bomba |
+| `T` | Teletransportar o jogador (precisa da carta de teleporte) |
 | `R` | Reiniciar a partida |
 | `M` | Voltar ao menu |
 | `Q` ou `Esc` | Encerrar o jogo |
 
 No modo automático, o jogador usa busca em largura para procurar inimigos e paredes frágeis, coloca bombas, tenta fugir da área de explosão e reinicia automaticamente após uma derrota.
+
+## Cartas especiais
+
+Dois blocos dourados nascem escondidos entre as paredes frágeis. Ao quebrá-los com uma bomba, a carta cai no chão e basta pisar em cima:
+
+| Carta | Efeito |
+| --- | --- |
+| Duas bombas | O jogador passa a poder ter **duas bombas** no cenário ao mesmo tempo, pelo resto da partida. Sem a carta vale a regra do enunciado: uma bomba por vez. |
+| Teleporte | Teletransporta o jogador uma vez para uma célula livre sorteada, com a tecla `T`. |
+
+As duas são extras além do enunciado. O limite começa em `MAX_BOMBAS_INICIAL` (1) e volta a esse valor a cada reinício de partida.
 
 ## Elementos visuais
 
@@ -134,6 +170,8 @@ No modo automático, o jogador usa busca em largura para procurar inimigos e par
 | Parede sólida | Retângulo cinza com detalhe |
 | Parede frágil | Retângulo azul |
 | Explosão | Retângulo laranja |
+| Bloco bônus | Retângulo dourado com círculo |
+| Cartas no chão | Sprites `duas_bombas.png` e `teleport.png` sobre um halo claro |
 
 `desenharSpriteNaCelula()` preserva a proporção original, aplica margem e centraliza o PNG. A escala usada é o menor valor entre a largura e a altura disponíveis, evitando corte ou deformação. A tela inteira é montada em um buffer secundário e copiada de uma vez para a janela, reduzindo flickering.
 
@@ -143,9 +181,10 @@ No modo automático, o jogador usa busca em largura para procurar inimigos e par
 - `Posicao`, `Inimigo` e `Bomba` agrupam os dados das entidades;
 - `mapa[LINHAS][COLUNAS]` mantém o cenário em uma matriz fixa;
 - `vector<Inimigo>` e `vector<Posicao>` guardam inimigos e células da explosão;
-- `criarMapa()`, `moverJogador()`, `moverInimigos()`, `colocarBomba()`, `iniciarExplosao()`, `atualizarBomba()` e `atualizarBot()` preservam a lógica do jogo;
+- `criarMapa()`, `moverJogador()`, `moverInimigos()`, `colocarBomba()`, `iniciarExplosao()`, `atualizarBombas()` e `atualizarBot()` preservam a lógica do jogo;
+- `escalaQueCabe()` e `ajustarEscalaParaCaberNaTela()` mantêm a janela dentro da tela disponível;
 - `carregarAssets()` e `liberarAssets()` controlam o ciclo de vida dos PNGs;
-- `desenharMapa()`, `desenharCelula()`, `desenharHUD()` e `desenharSpriteNaCelula()` cuidam somente da apresentação;
+- `desenharMapa()`, `desenharTerrenoCelula()`, `desenharExplosaoOverlay()`, `desenharHUD()` e `desenharSpriteNaCelula()` cuidam somente da apresentação;
 - `processarMensagem()` recebe teclado, timer, pintura, DPI e fechamento da janela.
 
 ## Arquivos
@@ -153,12 +192,7 @@ No modo automático, o jogador usa busca em largura para procurar inimigos e par
 - `bomberman.cpp`: fonte oficial do jogo;
 - `assets/`: sprites PNG;
 - `compilar.ps1`: compilação reproduzível;
-- `DEFESA.md`: documento oficial de defesa da versão moderna;
-- `legado/bomberman_legado.cpp`: entrada da edição clássica;
-- `legado/compilar_legado.ps1`: build separada da edição clássica;
-- `legado/README.md` e `legado/DEFESA.md`: documentação oficial da edição clássica;
-- `bomberman_defesa_comentado.cpp`: guia compilável de leitura do fonte;
-- `ROTEIRO_DEFESA.md`: roteiro para a apresentação acadêmica;
+- `docs/`: enunciado do trabalho;
 - `README.md`: instruções do projeto.
 
 O arquivo `bomberman.exe` é gerado localmente e não precisa ser versionado.

@@ -2,6 +2,16 @@
 *.o
 *.obj
 
+# Arte original das cartas (JPEG grande). O jogo usa os PNG convertidos,
+# leves e com transparencia; estes ficam so como backup local.
+assets/*.jpeg
+assets/*.jpg
+
 # Materiais pessoais para estudar a defesa (nao enviar ao repositorio)
-bomberman_defesa_comentado.cpp
+bomberman_defesa.cpp
 ROTEIRO_DEFESA.md
+
+# Documentação pessoal (não versionar)
+DEFESA.md
+INVESTIGACAO_PERFORMANCE.md
+docs/
