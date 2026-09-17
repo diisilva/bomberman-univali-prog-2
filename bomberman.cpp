@@ -1,22 +1,22 @@
 /* ===========================================================================
-   BOMBERMAN, Trabalho M1 de Algoritmos e Programacao II (22817)
-   Universidade do Vale do Itajai, Escola Politecnica
-   Curso de Ciencia da Computacao
+   BOMBERMAN - Trabalho M1 de Algoritmos e Programacao II (22817)
+   UNIVALI, Escola Politecnica, Ciencia da Computacao
 
-   [PDF - TECNICA 1] "Identificacao dos desenvolvedores e comentarios
-   pertinentes no codigo."
+   [PDF - TECNICA 1] Identificacao dos desenvolvedores e comentarios
+   pertinentes no codigo - e o que esse cabecalho e os comentarios abaixo
+   tentam cumprir.
 
    Desenvolvedores: Diego Silva | Gabriel Bianchessi
 
    COMO O ARQUIVO ESTA ORGANIZADO
-   Cada bloco abaixo tem um cabecalho dizendo (a) o que ele faz, (b) qual
-   biblioteca ele usa e (c) qual item da grade de avaliacao do PDF ele atende.
-   As marcacoes seguem este padrao:
+   Cada bloco tem um cabecalho dizendo o que ele faz e, quando da pra
+   relacionar, qual item da grade de avaliacao do PDF ele atende. As
+   marcacoes usadas sao:
 
        [PDF - FUNCIONALIDADE n]  -> um dos 15 itens de "FUNCIONALIDADES"
        [PDF - TECNICA n]         -> um dos 4 itens de "TECNICAS"
 
-   A divisao geral do arquivo e:
+   Divisao geral do arquivo:
        1) Bibliotecas usadas
        2) Constantes de regra e de tela
        3) Tipos (enums e structs) e estado do jogo
@@ -37,33 +37,31 @@
        R ............. reiniciar     M ....... voltar ao menu
        Q ou ESC ...... sair
 
-   CARTAS ESPECIAIS (extra nosso, nao pedido no enunciado)
-   Dois blocos dourados escondem cartas. Ao quebra-los com uma bomba, a carta
-   cai no chao e basta pisar em cima:
-       DUAS BOMBAS .. passa a permitir duas bombas no cenario ao mesmo tempo,
-                      pelo resto da partida;
+   CARTAS ESPECIAIS (ideia nossa, nao pedida no enunciado)
+   Tem dois blocos dourados escondendo cartas no mapa. Quebrando com uma
+   bomba, a carta cai no chao e e so pisar em cima:
+       DUAS BOMBAS .. deixa colocar 2 bombas ao mesmo tempo pelo resto da
+                      partida;
        TELEPORTE .... teletransporta o jogador uma vez, com a tecla T.
    =========================================================================== */
 
 /* ---------------------------------------------------------------------------
    1) BIBLIOTECAS USADAS
 
-   Bibliotecas do Windows (fazem parte do sistema, nao sao motor grafico):
-     <windows.h>  Win32 API: cria a janela, recebe o teclado, dispara o timer
-                  e entrega as mensagens do sistema. Tambem traz o GDI, que
-                  fornece o bitmap de memoria usado no buffer duplo.
-     <gdiplus.h>  GDI+: carrega arquivos PNG com transparencia (canal alpha) e
-                  desenha imagem e texto com qualidade. O GDI puro nao le PNG.
+   <windows.h>  Win32: cria a janela, le o teclado, dispara o timer e traz
+                o GDI (usado no buffer duplo).
+   <gdiplus.h>  GDI+: pra carregar PNG com transparencia e desenhar com mais
+                qualidade. O GDI sozinho nao abre PNG.
 
-   Bibliotecas padrao do C++ (conteudo da disciplina):
-     <algorithm>  min, max, shuffle e fill.
-     <chrono>     relogio de alta precisao para medir o tempo entre quadros.
-     <memory>     unique_ptr, que libera a memoria das imagens sozinho.
-     <queue>      fila usada na busca em largura (BFS) do bot e dos inimigos.
-     <random>     mt19937 e uniform_int_distribution para todo sorteio do jogo.
-     <string>     wstring, o texto em formato wide usado pelo Windows.
-     <unordered_map> tabela usada para reaproveitar fontes ja criadas.
-     <vector>     vetores de inimigos, de bombas, de celulas e de itens.
+   O resto e biblioteca padrao do C++, vista na disciplina:
+   <algorithm>     min, max, shuffle, fill.
+   <chrono>        relogio de alta precisao pra medir o tempo entre os quadros.
+   <memory>        unique_ptr, libera a memoria das imagens sozinho.
+   <queue>         fila usada no BFS do bot e dos inimigos.
+   <random>        mt19937 e uniform_int_distribution pros sorteios do jogo.
+   <string>        wstring, o texto wide que o Windows usa.
+   <unordered_map> guarda as fontes ja criadas pra nao recriar toda hora.
+   <vector>        vetores de inimigos, bombas, celulas e itens.
    --------------------------------------------------------------------------- */
 #include <windows.h>
 #include <gdiplus.h>
@@ -85,11 +83,10 @@ using namespace std;
 /* ---------------------------------------------------------------------------
    2) CONSTANTES DE REGRA
 
-   Todo numero que define o comportamento do jogo fica aqui em cima, com nome.
-   Assim, mudar o ritmo do jogo e trocar uma constante, sem cacar numero solto
-   no meio do codigo. Isso atende o pedido do PDF de "produzam todo o codigo
-   pensando na possibilidade de que novas funcionalidades poderao ser
-   solicitadas no futuro".
+   Todo numero que define o comportamento do jogo fica aqui em cima, com
+   nome. Assim da pra mudar o ritmo do jogo so trocando a constante, sem
+   precisar cacar numero solto no meio do codigo - o que tambem ajuda a
+   deixar o jogo pronto pra novas funcionalidades no futuro, como o PDF pede.
    --------------------------------------------------------------------------- */
 const int LINHAS = 15;                      // altura do tabuleiro em celulas
 const int COLUNAS = 19;                     // largura do tabuleiro em celulas
@@ -102,16 +99,16 @@ const int ALCANCE_EXPLOSAO_MAXIMO = 3;      // raio maximo que a bomba alcanca
 const int PASSO_LOGICA_MS = 25;             // periodo do timer que atualiza a logica
 const int PONTOS_POR_INIMIGO = 100;         // pontuacao ganha por inimigo derrotado
 
-// [PDF - BOMBA] "Apenas uma bomba podera estar presente no cenario do jogo."
-// O limite comeca em 1, como o enunciado exige. A carta DUAS_BOMBAS (extra
-// nosso) sobe esse limite para 2 pelo resto da partida.
+// [PDF - BOMBA] o enunciado pede que exista apenas uma bomba no cenario por
+// vez. O limite comeca em 1, como pedido. A carta DUAS_BOMBAS (extra nosso,
+// fora do enunciado) sobe esse limite pra 2 pelo resto da partida.
 const int MAX_BOMBAS_INICIAL = 1;
 const int MAX_BOMBAS_COM_CARTA = 2;
 
-// Ritmo dos inimigos. A caminhada de 1 a 3 quadrados exigida pelo PDF acontece
-// UM QUADRADO POR VEZ, separada por INTERVALO_PASSO_INIMIGO_MS. Se os tres
-// quadrados fossem aplicados no mesmo instante, o inimigo sumiria de um ponto e
-// apareceria no outro (efeito de teletransporte) em vez de caminhar.
+// Ritmo dos inimigos. A caminhada de 1 a 3 quadrados acontece UM QUADRADO
+// POR VEZ, com uma pausa entre cada passo. Se desse os 3 quadrados de uma
+// vez so, o inimigo ia sumir de um lugar e aparecer no outro, tipo um
+// teleporte, em vez de parecer que ta andando.
 const int INTERVALO_PASSO_INIMIGO_MS = 150; // tempo entre dois quadrados da mesma caminhada
 const int PAUSA_INIMIGO_MIN_MS = 500;       // pausa minima entre uma caminhada e a proxima
 const int PAUSA_INIMIGO_MAX_MS = 900;       // pausa maxima entre uma caminhada e a proxima
@@ -126,9 +123,9 @@ const int TOTAL_BLOCOS_BONUS = 2;           // quantos blocos escondem cartas es
    CONSTANTES DE TELA
 
    Medidas em "unidades base" (como se a tela estivesse em 100% de escala). A
-   funcao px() converte essas unidades para pixels reais conforme a escala
+   funcao px() converte essas unidades pra pixel real conforme a escala
    escolhida em ajustarEscalaParaCaberNaTela(), que leva em conta o DPI do
-   monitor E o espaco realmente disponivel na tela.
+   monitor e o espaco que realmente sobra na tela.
    --------------------------------------------------------------------------- */
 const int TAMANHO_CELULA = 52;              // lado de cada quadrado do tabuleiro
 const int ALTURA_CABECALHO = 104;           // faixa superior com titulo e placar
@@ -140,16 +137,15 @@ const float ESCALA_MINIMA = 0.45f;          // piso de legibilidade em telas mui
 /* ---------------------------------------------------------------------------
    3) TIPOS DO JOGO
 
-   enum: da nome a valores que so podem ser um de uma lista fechada, no lugar de
-   numeros soltos (0, 1, 2...). struct: agrupa dados que andam juntos.
+   enum: da nome pra valores que so podem ser um de uma lista fechada, em vez
+   de numero solto (0, 1, 2...). struct: junta dados que andam sempre juntos.
 
-   [PDF - TECNICA 4] "Subrotinas: boa segmentacao e emprego das tecnicas": structs
-   e enums mantem os dados organizados por entidade.
+   [PDF - TECNICA 4] structs e enums ajudam a manter os dados organizados por
+   entidade, que e a boa segmentacao que o PDF pede.
    --------------------------------------------------------------------------- */
 
 // O que pode existir em uma celula do tabuleiro.
-// [PDF - PAREDES] "O cenario do jogo devera ser composto por paredes solidas e
-// por paredes frageis."
+// [PDF - PAREDES] o cenario precisa ter parede solida e parede fragil.
 enum TipoCelula {
     VAZIO,          // chao livre: da para andar
     PAREDE_SOLIDA,  // cinza: bloqueia e NAO pode ser destruida
@@ -166,7 +162,7 @@ enum TipoItem { DUAS_BOMBAS, TELEPORTE };       // cartas especiais que os bloco
 struct Posicao { int linha, coluna; };
 
 // Um inimigo. Alem da posicao, cada um carrega o proprio relogio e a propria
-// caminhada, para que eles nao andem todos juntos no mesmo instante.
+// caminhada, pra eles nao andarem todos juntos no mesmo instante.
 struct Inimigo {
     Posicao posicao;            // onde ele esta no tabuleiro
     bool vivo;                  // false depois de ser atingido pela explosao
@@ -177,7 +173,7 @@ struct Inimigo {
 };
 
 // Uma bomba plantada. Estar dentro do vetor `bombas` ja significa que ela
-// existe no cenario, entao nao ha campo "ativa": quem some do vetor, acabou.
+// existe no cenario, entao nao tem campo "ativa": quem some do vetor, acabou.
 struct Bomba {
     Posicao posicao{0, 0};      // onde ela foi plantada
     bool explodindo = false;    // false = pavio queimando; true = chamas na tela
@@ -192,12 +188,13 @@ struct BlocoBonus { Posicao posicao; TipoItem tipo; };  // carta ainda escondida
    ESTADO DO JOGO (variaveis globais)
 
    Sao globais porque a Win32 chama nossas funcoes atraves de um callback
-   (processarMensagem) que nao permite carregar o estado do jogo como
-   parametro. As sub-rotinas de regra, porem, recebem por parametro/referencia
-   aquilo em que trabalham, conforme a TECNICA 3 mais abaixo.
+   (processarMensagem) que nao da pra passar o estado do jogo como parametro
+   direto. As funcoes de regra, porem, recebem por parametro/referencia o que
+   precisam usar - e o [PDF - TECNICA 3] que a gente segue nas funcoes mais
+   abaixo.
    --------------------------------------------------------------------------- */
 
-// [PDF - TECNICA 4] O cenario e uma MATRIZ FIXA, conteudo da disciplina.
+// [PDF - TECNICA 4] o cenario e uma matriz fixa, conteudo visto na disciplina.
 TipoCelula mapa[LINHAS][COLUNAS];
 
 Posicao jogador{1, 1};              // posicao atual do protagonista
@@ -219,11 +216,11 @@ mt19937 gerador(random_device{}()); // gerador de numeros aleatorios (biblioteca
 /* ---------------------------------------------------------------------------
    ESTADO DA CAMADA GRAFICA
 
-   Nada aqui altera regra de jogo: sao apenas recursos do Windows guardados
-   para nao serem recriados a cada quadro. Recriar bitmap, fonte e imagem
-   redimensionada 40 vezes por segundo consumia quase um nucleo inteiro de CPU
-   e fazia o teclado atrasar, porque a mesma thread que desenha e a que le o
-   teclado.
+   Nada aqui mexe na regra do jogo, sao so recursos do Windows guardados pra
+   nao precisar recriar a cada quadro. A gente tentou sem esse cuidado no
+   comeco e recriar bitmap, fonte e imagem redimensionada 40 vezes por
+   segundo tava consumindo quase um nucleo inteiro de CPU, e ate o teclado
+   ficava travando (a mesma thread desenha e le o teclado).
    --------------------------------------------------------------------------- */
 HWND janelaPrincipal = nullptr;     // identificador da janela (Win32)
 ULONG_PTR tokenGdiPlus = 0;         // sessao aberta do GDI+
@@ -255,15 +252,15 @@ void invalidarCacheMapa() { cacheMapaSujo = true; }
 /* ---------------------------------------------------------------------------
    4) CONSULTAS BASICAS SOBRE O TABULEIRO
 
-   Sub-rotinas curtas que respondem "sim ou nao" e sao reusadas por todo o
-   resto do arquivo.
+   Funcoes curtas que so respondem "sim ou nao" e sao reaproveitadas no resto
+   do arquivo inteiro.
 
-   [PDF - TECNICA 3] "Subrotinas: parametros e referencia corretos."
-   A escolha de cada passagem segue um criterio:
-     - int e Posicao vao POR VALOR: sao pequenos e a funcao nao precisa altera-los;
-     - a matriz e os vetores vao POR REFERENCIA com const: assim nao e feita
-       uma copia do tabuleiro/vetor inteiro a cada chamada, e o const garante
-       que a funcao so le, nunca escreve.
+   [PDF - TECNICA 3] sobre como os parametros sao passados aqui:
+     - int e Posicao vao por valor: sao pequenos e a funcao nao precisa mudar
+       o original;
+     - a matriz e os vetores vao por referencia com const: evita copiar o
+       tabuleiro/vetor inteiro a cada chamada, e o const garante que a
+       funcao so le, nunca escreve.
    --------------------------------------------------------------------------- */
 
 // Duas posicoes sao a mesma celula?
@@ -276,15 +273,15 @@ bool dentro(int linha, int coluna) {
     return linha >= 0 && linha < LINHAS && coluna >= 0 && coluna < COLUNAS;
 }
 
-// [PDF - FUNCIONALIDADE 3] "O jogador e bloqueado por qualquer tipo de parede."
-// [PDF - PAREDES] "Todas as paredes deverao impedir a passagem do jogador e dos inimigos."
-// Esta e a unica regra de colisao com parede do jogo: so a celula VAZIO e
-// caminhavel. PAREDE_SOLIDA, PAREDE_FRAGIL e PAREDE_BONUS bloqueiam igual.
+// [PDF - FUNCIONALIDADE 3] o jogador tem que ser bloqueado por qualquer tipo
+// de parede. [PDF - PAREDES] toda parede impede a passagem do jogador e dos
+// inimigos. Essa e a unica regra de colisao com parede do jogo: so a celula
+// VAZIO e caminhavel, as tres paredes bloqueiam igual.
 //
-// [PDF - FUNCIONALIDADE 2] "O jogador consegue se mover em uma area com bomba."
-// A funcao olha SOMENTE a matriz do cenario. A bomba nao esta na matriz (esta
-// no vetor `bombas`), entao ela nao aparece aqui e por isso nao impede a
-// passagem do jogador.
+// [PDF - FUNCIONALIDADE 2] o jogador consegue se mover numa area com bomba.
+// A funcao olha SOMENTE a matriz do cenario - a bomba nao esta aqui, esta no
+// vetor `bombas` - entao quem quiser barrar a celula onde tem bomba precisa
+// checar `temBombaEm` por fora, como moverJogador e darUmPassoInimigo fazem.
 bool livre(const TipoCelula cenario[][COLUNAS], int linha, int coluna) {
     return dentro(linha, coluna) && cenario[linha][coluna] == VAZIO;
 }
@@ -322,8 +319,8 @@ int inimigosVivos(const vector<Inimigo>& lista) {
 /* ---------------------------------------------------------------------------
    5) GERACAO DO CENARIO
 
-   [PDF - PAREDES] "O cenario do jogo devera ser composto por paredes solidas e
-   por paredes frageis."
+   [PDF - PAREDES] o cenario precisa ser composto por paredes solidas e
+   paredes frageis.
    --------------------------------------------------------------------------- */
 
 // Abre espaco em volta de um ponto de nascimento, para ninguem nascer preso.
@@ -416,7 +413,7 @@ void reiniciar() {
 
     jogador = spawns[0];            // o primeiro sorteado e o jogador
     inimigos.clear();
-    // [PDF - FUNCIONALIDADE 10] A quantidade de inimigos sai de uma unica
+    // [PDF - FUNCIONALIDADE 10] a quantidade de inimigos vem de uma unica
     // constante: TOTAL_INIMIGOS_INICIAL.
     for (int i = 1; i <= TOTAL_INIMIGOS_INICIAL; i++) inimigos.push_back(criarInimigo(spawns[i]));
 
@@ -455,44 +452,48 @@ void coletarItens(Posicao onde, vector<Item>& chao, int& limiteBombas, bool& tem
     }
 }
 
-// [PDF - FUNCIONALIDADE 1] "O jogador se move corretamente para todas as direcoes."
-// [PDF - FUNCIONALIDADE 4] "O jogador se move sem bugs."
+// [PDF - FUNCIONALIDADE 1] o jogador tem que se mover certinho pras quatro
+// direcoes. [PDF - FUNCIONALIDADE 4] e sem bugs.
 // dl e dc sao o deslocamento: (-1,0) cima, (1,0) baixo, (0,-1) esquerda, (0,1) direita.
-// A posicao vai POR REFERENCIA (Posicao&) porque a funcao precisa altera-la.
+// A posicao vai por referencia (Posicao&) porque a funcao precisa alterar ela.
 void moverJogador(Posicao& personagem, int dl, int dc) {
     if (estado != JOGANDO || tempoMovimentoMs > 0) return;  // partida acabou ou em cooldown
 
     Posicao destino{personagem.linha + dl, personagem.coluna + dc};
 
-    // [PDF - FUNCIONALIDADE 3] So anda se o destino for chao. Qualquer parede barra.
-    // [PDF - FUNCIONALIDADE 2] livre() nao consulta as bombas, entao andar sobre
-    // a celula de uma bomba e permitido.
-    if (livre(mapa, destino.linha, destino.coluna)) personagem = destino;
+    // [PDF - FUNCIONALIDADE 3] so anda se o destino for chao livre, qualquer
+    // parede barra. [PDF - FUNCIONALIDADE 2] uma bomba em OUTRA celula nao
+    // impede o jogador de andar pelo resto do mapa, pois livre() so olha o
+    // terreno. Ja a propria celula da bomba bloqueia como parede: o
+    // professor confirmou que o jogador pode ficar em cima da bomba que
+    // acabou de plantar (ele ja tava la, nao precisou entrar nela), mas
+    // assim que sai dela a celula fica intransponivel ate a bomba explodir.
+    if (livre(mapa, destino.linha, destino.coluna) && !temBombaEm(bombas, destino))
+        personagem = destino;
 
-    // [PDF - FUNCIONALIDADE 8] "O jogador morre quando colide com um inimigo."
-    // [PDF - FUNCIONALIDADE 9] Andar para dentro do fogo tambem mata.
+    // [PDF - FUNCIONALIDADE 8] colidir com um inimigo mata. [PDF -
+    // FUNCIONALIDADE 9] andar pra dentro do fogo tambem mata.
     if (temInimigo(inimigos, personagem) || naExplosao(areaExplosao, personagem)) estado = DERROTA;
 
     coletarItens(personagem, itensNoChao, maxBombas, possuiCartaTeleporte);
 
-    // [PDF - FUNCIONALIDADE 4] O cooldown e o que impede o personagem de
-    // atravessar o mapa inteiro em um quadro e de "tremer" na tela.
+    // [PDF - FUNCIONALIDADE 4] o cooldown e o que impede o personagem de
+    // atravessar o mapa inteiro num quadro so e de "tremer" na tela.
     tempoMovimentoMs = INTERVALO_MOVIMENTO_MS;
 }
 
-// [PDF - FUNCIONALIDADE 5] "O jogador consegue colocar bombas onde esta."
-// [PDF - FUNCIONALIDADE 6] "O jogador nao consegue colocar uma segunda bomba
-//                           enquanto outra esta no mapa."
-// [PDF - BOMBA] "Apenas uma bomba podera estar presente no cenario do jogo."
+// [PDF - FUNCIONALIDADE 5] o jogador consegue colocar bomba onde esta.
+// [PDF - FUNCIONALIDADE 6] nao pode colocar uma segunda bomba enquanto a
+// primeira ainda esta no mapa. [PDF - BOMBA] so pode ter uma bomba no
+// cenario por vez.
 //
-// A regra do enunciado e o teste `lista.size() >= limite`, com `limite` valendo
-// MAX_BOMBAS_INICIAL (= 1) durante toda a partida. O limite so sobe para 2 se o
-// jogador encontrar a carta DUAS_BOMBAS, que e um extra nosso, fora do
-// enunciado. Enquanto ele nao pegar a carta, o comportamento e exatamente o
-// exigido: uma bomba por vez.
+// Isso vira o teste `lista.size() >= limite`, com `limite` valendo
+// MAX_BOMBAS_INICIAL (1) a partida toda. So sobe pra 2 se o jogador achar a
+// carta DUAS_BOMBAS, que e um extra nosso, fora do enunciado. Enquanto ele
+// nao pegar a carta, o comportamento e exatamente o pedido: uma bomba por vez.
 void colocarBomba(vector<Bomba>& lista, Posicao origem, int limite) {
     if (estado != JOGANDO) return;
-    if (static_cast<int>(lista.size()) >= limite) return;   // <- FUNCIONALIDADE 6
+    if (static_cast<int>(lista.size()) >= limite) return;   // FUNCIONALIDADE 6: trava do limite
     if (temBombaEm(lista, origem)) return;                  // nao empilha duas na mesma casa
 
     Bomba nova;
@@ -502,8 +503,8 @@ void colocarBomba(vector<Bomba>& lista, Posicao origem, int limite) {
     lista.push_back(nova);
 }
 
-// EXTRA (nao pedido no PDF): com a carta de teleporte, pula para uma celula
-// livre sorteada do tabuleiro.
+// Extra nosso (nao pedido no PDF): com a carta de teleporte, pula pra uma
+// celula livre sorteada do tabuleiro.
 void teletransportarJogador() {
     if (estado != JOGANDO || !possuiCartaTeleporte) return;
     vector<Posicao> livres;
@@ -535,15 +536,15 @@ void destruirBlocoBonus(vector<BlocoBonus>& blocos, vector<Item>& chao, int linh
     }
 }
 
-// [PDF - FUNCIONALIDADE 11] "A bomba nao destroi paredes solidas."
-// [PDF - FUNCIONALIDADE 12] "A bomba destroi paredes frageis."
-// [PDF - BOMBA] "A explosao nao podera quebrar paredes solidas."
+// [PDF - FUNCIONALIDADE 11] a bomba nao destroi parede solida. [PDF -
+// FUNCIONALIDADE 12] a bomba destroi parede fragil.
 // Avanca uma das quatro direcoes da cruz de fogo, celula por celula:
-//   - PAREDE_SOLIDA  -> return imediato: a chama nem entra na celula;
-//   - PAREDE_FRAGIL  -> a celula pega fogo, a parede vira chao e o raio PARA
-//                       ali (uma parede nao deixa a chama passar para tras dela);
-//   - chao           -> a celula pega fogo e o raio continua.
-// O vetor "area" vai por referencia porque a funcao acrescenta celulas nele.
+//   - PAREDE_SOLIDA  -> para na hora, a chama nem entra na celula;
+//   - PAREDE_FRAGIL  -> pega fogo, vira chao e o raio PARA ali (a parede nao
+//                       deixa a chama passar pra tras dela);
+//   - chao           -> pega fogo e o raio continua.
+// O vetor "area" vai por referencia porque a funcao vai adicionando celulas
+// nele.
 void adicionarRaio(TipoCelula cenario[][COLUNAS], Posicao origem, int dl, int dc,
                    int alcance, vector<Posicao>& area) {
     for (int distancia = 1; distancia <= alcance; distancia++) {
@@ -552,7 +553,7 @@ void adicionarRaio(TipoCelula cenario[][COLUNAS], Posicao origem, int dl, int dc
 
         if (!dentro(l, c) || cenario[l][c] == PAREDE_SOLIDA) return;  // FUNCIONALIDADE 11
 
-        area.push_back({l, c});                                       // FUNCIONALIDADE 13
+        area.push_back({l, c});                                       // essa celula pega fogo
 
         if (cenario[l][c] == PAREDE_FRAGIL) {                         // FUNCIONALIDADE 12
             cenario[l][c] = VAZIO;
@@ -568,37 +569,36 @@ void adicionarRaio(TipoCelula cenario[][COLUNAS], Posicao origem, int dl, int dc
     }
 }
 
-// Marca um inimigo como morto e paga a recompensa.
-// [PDF - TECNICA 3] Tres passagens diferentes na mesma assinatura:
-//   Inimigo& -> referencia, porque o inimigo e alterado (vivo = false);
-//   int&     -> referencia, porque a pontuacao e o alcance sao somados aqui e
-//               o resultado precisa valer para quem chamou.
+// Marca um inimigo como morto e paga a recompensa. [PDF - TECNICA 3] aqui
+// Inimigo& e int& vao por referencia porque a funcao precisa alterar o
+// original (vivo = false, pontuacao e alcance somados), e isso tem que
+// valer pra quem chamou.
 void matarInimigo(Inimigo& inimigo, int& pontuacao, int& alcance) {
     inimigo.vivo = false;
     pontuacao += PONTOS_POR_INIMIGO;
-    // EXTRA: a cada inimigo derrotado a bomba fica mais forte, ate o limite.
+    // Extra nosso: a cada inimigo derrotado a bomba fica mais forte, ate o limite.
     if (alcance < ALCANCE_EXPLOSAO_MAXIMO) alcance++;
 }
 
-// [PDF - FUNCIONALIDADE 9]  "O jogador morre quando uma bomba explode perto dele."
-// [PDF - FUNCIONALIDADE 15] "A condicao de derrota e atingida corretamente."
-// [PDF - BOMBA] "Quando a bomba explodir devera destruir todos os jogadores e
-//                inimigos que estiverem em sua proximidade."
-// Esta e a sub-rotina que o PDF cobra em TECNICA 3: ela recebe a area em chamas
-// so para leitura (const) e o vetor de inimigos, o estado da partida, a
-// pontuacao e o alcance por referencia, alterando os quatro diretamente.
+// [PDF - FUNCIONALIDADE 9] o jogador morre quando uma bomba explode perto
+// dele. [PDF - FUNCIONALIDADE 15] a derrota tem que ser detectada certinho.
+// [PDF - BOMBA] quando explode, tem que destruir jogador e inimigos por
+// perto.
+// [PDF - TECNICA 3] essa funcao recebe a area em chamas so pra leitura
+// (const) e o resto (inimigos, estado, pontuacao, alcance) por referencia,
+// porque altera os quatro direto.
 void atingirPersonagens(const vector<Posicao>& area, vector<Inimigo>& listaInimigos,
                         EstadoJogo& estadoAtual, int& pontuacao, int& alcance) {
-    if (naExplosao(area, jogador)) estadoAtual = DERROTA;           // FUNCIONALIDADE 9
+    if (naExplosao(area, jogador)) estadoAtual = DERROTA;           // jogador pegou fogo
     for (Inimigo& inimigo : listaInimigos) {                        // & = altera o original
         if (inimigo.vivo && naExplosao(area, inimigo.posicao))
-            matarInimigo(inimigo, pontuacao, alcance);              // INIMIGO morre na explosao
+            matarInimigo(inimigo, pontuacao, alcance);              // inimigo pegou fogo
     }
 }
 
-// [PDF - FUNCIONALIDADE 13] "A explosao da bomba devera ser visivel."
-// Monta a cruz de fogo DESTA bomba e guarda as celulas dentro dela. As paredes
-// frageis sao destruidas aqui, uma unica vez, no instante da explosao.
+// [PDF - FUNCIONALIDADE 13] a explosao da bomba precisa ser visivel.
+// Monta a cruz de fogo dessa bomba e guarda as celulas atingidas. As paredes
+// frageis sao destruidas aqui mesmo, no instante da explosao.
 void iniciarExplosao(Bomba& alvo) {
     alvo.explodindo = true;
     alvo.tempoMs = TEMPO_EXPLOSAO_MS;   // agora conta o tempo das chamas na tela
@@ -620,14 +620,14 @@ void recalcularAreaExplosao(const vector<Bomba>& lista, vector<Posicao>& area) {
             for (const Posicao& p : b.celulas) area.push_back(p);
 }
 
-// [PDF - BOMBA] "A bomba ... devera explodir depois de um tempo."
-// [PDF - FUNCIONALIDADE 7] "O jogador consegue colocar uma segunda bomba apos
-//                           a explosao da anterior."
-// Relogio de todas as bombas, chamado a cada tick. Cada bomba vive duas fases:
+// [PDF - BOMBA] a bomba tem que explodir depois de um tempo. [PDF -
+// FUNCIONALIDADE 7] o jogador consegue colocar uma segunda bomba apos a
+// explosao da anterior.
+// Relogio de todas as bombas, chamado a cada tick. Cada bomba tem duas fases:
 //   fase 1 (explodindo = false) -> conta TEMPO_BOMBA_MS, o pavio;
 //   fase 2 (explodindo = true)  -> conta TEMPO_EXPLOSAO_MS com o fogo na tela.
-// Ao fim da fase 2 a bomba SAI DO VETOR, e e so por isso que o jogador pode
-// plantar a proxima (ver colocarBomba, FUNCIONALIDADE 6).
+// No fim da fase 2 a bomba sai do vetor, e e so ai que o jogador pode
+// plantar a proxima (ver colocarBomba).
 void atualizarBombas(int tempoMs, vector<Bomba>& lista) {
     for (Bomba& b : lista) {
         b.tempoMs -= tempoMs;
@@ -653,18 +653,16 @@ void atualizarBombas(int tempoMs, vector<Bomba>& lista) {
 /* ---------------------------------------------------------------------------
    8) INIMIGOS
 
-   [PDF - FUNCIONALIDADE 10] "O inimigo se move conforme solicitado."
-   [PDF - INIMIGO] "O inimigo, de tempos em tempos, ira se mover 1, 2 ou 3
-                    quadrados em uma direcao aleatoria livre ou ate encontrar
-                    um obstaculo."
+   [PDF - FUNCIONALIDADE 10] o inimigo se move conforme pedido. [PDF -
+   INIMIGO] de tempos em tempos, ele anda 1, 2 ou 3 quadrados numa direcao
+   aleatoria livre, ou para se bater em obstaculo.
 
-   Como isso foi implementado: cada inimigo guarda uma CAMINHADA (uma direcao
-   sorteada + quantos quadrados faltam). Ele da um quadrado por vez, esperando
-   INTERVALO_PASSO_INIMIGO_MS entre eles, e ao terminar faz uma pausa sorteada
-   entre PAUSA_INIMIGO_MIN_MS e PAUSA_INIMIGO_MAX_MS ("de tempos em tempos").
-   Dar os tres quadrados de uma vez so tambem cumpriria o enunciado, mas na
-   tela o inimigo pareceria teletransportar, porque ele seria desenhado apenas
-   na posicao final.
+   Como implementamos: cada inimigo guarda uma "caminhada" (direcao sorteada
+   + quantos quadrados faltam). Ele anda um quadrado por vez, com uma pausa
+   curta entre cada passo, e ao terminar a caminhada faz uma pausa maior
+   sorteada ("de tempos em tempos"). Da pra fazer os 3 quadrados de uma vez
+   so tambem, mas ai na tela o inimigo ia parecer que teletransportou, ja
+   que so apareceria na posicao final.
    --------------------------------------------------------------------------- */
 
 // Busca em largura (BFS) com FILA (<queue>): devolve qual o PRIMEIRO passo do
@@ -701,10 +699,9 @@ Posicao proximoPassoParaAlvo(Posicao origem, Posicao alvo) {
     return passo;
 }
 
-// Sorteia a proxima caminhada de um inimigo: quantos quadrados e para onde.
-// Perto do jogador, ha CHANCE_PERSEGUICAO% de chance de ele perseguir usando o
-// BFS acima; fora disso, escolhe uma das quatro direcoes livres ao acaso,
-// exatamente como o enunciado pede.
+// Sorteia a proxima caminhada de um inimigo: quantos quadrados e pra onde.
+// Perto do jogador, tem CHANCE_PERSEGUICAO% de chance dele perseguir usando
+// o BFS acima; fora disso, escolhe uma das quatro direcoes livres ao acaso.
 void planejarCaminhada(Inimigo& inimigo, int indice) {
     uniform_int_distribution<int> sorteioPassos(PASSOS_INIMIGO_MIN, PASSOS_INIMIGO_MAX);
     uniform_int_distribution<int> sorteioDirecao(0, 3);
@@ -738,9 +735,8 @@ void planejarCaminhada(Inimigo& inimigo, int indice) {
     inimigo.passosRestantes = 0;    // cercado: fica parado ate a proxima pausa
 }
 
-// Executa UM quadrado da caminhada atual. Devolve false se o inimigo bateu em
-// um obstaculo (ai a caminhada e interrompida, como o enunciado manda: "ou ate
-// encontrar um obstaculo").
+// Executa um quadrado da caminhada atual. Devolve false se o inimigo bateu
+// em algum obstaculo - o que interrompe a caminhada, como o enunciado pede.
 bool darUmPassoInimigo(Inimigo& inimigo, int indice) {
     Posicao destino;
     if (inimigo.perseguindo) {
@@ -751,16 +747,16 @@ bool darUmPassoInimigo(Inimigo& inimigo, int indice) {
                    inimigo.posicao.coluna + inimigo.direcao.coluna};
     }
 
-    // [PDF - INIMIGO] "...em uma direcao aleatoria livre..."
-    // TRAVA ANTI-DIAGONAL: um passo so vale se for de EXATAMENTE um quadrado,
-    // em linha OU em coluna. A soma dos deslocamentos em modulo tem de dar 1:
+    // [PDF - INIMIGO] o movimento tem que ser numa direcao aleatoria livre.
+    // Trava anti-diagonal: um passo so vale se for de exatamente um
+    // quadrado, em linha OU em coluna. A soma dos deslocamentos em modulo
+    // tem que dar 1:
     //   cima/baixo/esquerda/direita -> |dl| + |dc| = 1  (aceito)
     //   diagonal                    -> |dl| + |dc| = 2  (recusado)
     //   pulo de 2 ou 3 celulas      -> |dl| + |dc| >= 2 (recusado)
-    // As direcoes ja saem da tabela de 4 direcoes cardeais e o BFS da
-    // perseguicao so expande vizinhos cardeais, entao isto e uma garantia
-    // extra: nenhum caminho do codigo consegue mover um inimigo na diagonal
-    // nem faze-lo "pular" celulas dentro do mesmo quadro.
+    // Isso nunca deveria disparar de verdade, ja que as direcoes ja vem de
+    // uma tabela com so as 4 cardeais e o BFS da perseguicao tambem so
+    // expande vizinho cardeal, mas deixamos como garantia extra.
     int dl = destino.linha - inimigo.posicao.linha;
     int dc = destino.coluna - inimigo.posicao.coluna;
     if (abs(dl) + abs(dc) != 1) return false;
@@ -772,12 +768,12 @@ bool darUmPassoInimigo(Inimigo& inimigo, int indice) {
 
     inimigo.posicao = destino;
 
-    // [PDF - FUNCIONALIDADE 8] Se o inimigo andou por cima do jogador, o
-    // jogador morre. A colisao e testada dos DOIS lados (aqui e em moverJogador),
-    // porque qualquer um dos dois pode ser quem se move.
+    // [PDF - FUNCIONALIDADE 8] se o inimigo andar em cima do jogador, o
+    // jogador morre. A colisao e testada dos dois lados (aqui e em
+    // moverJogador), porque tanto faz quem se moveu.
     if (iguais(destino, jogador)) { estado = DERROTA; return false; }
 
-    // [PDF - INIMIGO] O inimigo morre se entrar em uma celula em chamas.
+    // [PDF - INIMIGO] o inimigo morre se entrar numa celula em chamas.
     if (naExplosao(areaExplosao, destino)) {
         matarInimigo(inimigo, pontos, alcanceExplosao);
         return false;
@@ -815,21 +811,21 @@ void moverInimigos(int tempoMs, vector<Inimigo>& lista) {
    9) VITORIA E DERROTA
    --------------------------------------------------------------------------- */
 
-// [PDF - FUNCIONALIDADE 14] "A condicao de vitoria e atingida corretamente."
-// [PDF - CONDICAO DE VITORIA] "O jogador ira vencer se estiver vivo quando
-//                              todos os inimigos tiverem morrido."
-// O "estiver vivo" e garantido pelo primeiro if: se o estado ja for DERROTA, a
-// funcao sai antes e nunca transforma uma derrota em vitoria.
+// [PDF - FUNCIONALIDADE 14] a condicao de vitoria tem que ser atingida
+// certinho. [PDF - CONDICAO DE VITORIA] o jogador vence se estiver vivo
+// quando todos os inimigos tiverem morrido.
+// O "estiver vivo" e garantido pelo primeiro if: se o estado ja for DERROTA,
+// a funcao sai antes e nunca transforma uma derrota em vitoria.
 void verificarVitoria(const vector<Inimigo>& lista, EstadoJogo& estadoAtual) {
     if (estadoAtual != JOGANDO) return;
     if (inimigosVivos(lista) == 0) estadoAtual = VITORIA;
 }
 
 /* ---------------------------------------------------------------------------
-   10) MODO AUTOMATICO (BOT), EXTRA nao pedido no PDF
+   10) MODO AUTOMATICO (BOT) - extra nosso, nao pedido no enunciado
 
-   O bot usa as MESMAS sub-rotinas do jogador humano (moverJogador e
-   colocarBomba). Ele so decide para onde ir; nenhuma regra e duplicada.
+   O bot usa as mesmas funcoes do jogador humano (moverJogador e
+   colocarBomba). Ele so decide pra onde ir; nao duplicamos nenhuma regra.
    --------------------------------------------------------------------------- */
 
 // Esta celula seria atingida por uma bomba plantada em "origemBomba"? Calculo
@@ -981,11 +977,11 @@ void atualizarBot() {
    passa por aqui, sempre na mesma ordem.
    --------------------------------------------------------------------------- */
 
-// [PDF - FUNCIONALIDADE 1]  Movimento em todas as direcoes.
-// [PDF - FUNCIONALIDADE 4]  "O jogador se move sem bugs."
-// Le o estado REAL das teclas a cada tick, em vez de depender da repeticao
-// automatica do WM_KEYDOWN, que segue o atraso configurado no Windows e dava a
-// sensacao de travamento ao segurar uma tecla.
+// [PDF - FUNCIONALIDADE 1] movimento em todas as direcoes. [PDF -
+// FUNCIONALIDADE 4] sem bugs.
+// Le o estado real das teclas a cada tick, em vez de depender da repeticao
+// automatica do WM_KEYDOWN (que segue o atraso configurado no Windows e
+// dava aquela sensacao de travamento quando segurava a tecla).
 void processarMovimentoContinuo() {
     if (modo != MANUAL) return;
     bool cima     = teclaPressionada['W'] || teclaPressionada[VK_UP];
@@ -1007,7 +1003,7 @@ void atualizar(int tempoMs) {
     atualizarBombas(tempoMs, bombas);                       // 2. as bombas contam e explodem
     moverInimigos(tempoMs, inimigos);                       // 3. os inimigos andam
 
-    // [PDF - FUNCIONALIDADE 8] Rede de seguranca: se um inimigo terminou o
+    // [PDF - FUNCIONALIDADE 8] rede de seguranca: se um inimigo terminou o
     // turno em cima do jogador, e derrota mesmo que nenhum dos dois tenha
     // detectado a colisao no proprio movimento.
     if (temInimigo(inimigos, jogador)) estado = DERROTA;
@@ -1019,10 +1015,10 @@ void atualizar(int tempoMs) {
 /* ---------------------------------------------------------------------------
    12) CAMADA GRAFICA
 
-   Daqui para baixo nao existe mais regra de jogo: este trecho apenas LE o
-   estado e desenha. Essa separacao e o que o PDF chama de boa segmentacao
-   [PDF - TECNICA 4]. Nao ha motor grafico (Unity, SDL, SFML): so Win32, GDI e
-   GDI+, que ja vem com o Windows.
+   Daqui pra baixo nao tem mais regra de jogo, e so leitura do estado e
+   desenho ([PDF - TECNICA 4]: essa separacao e a boa segmentacao que o PDF
+   pede). Nao usamos motor grafico nenhum (Unity, SDL, SFML), so Win32, GDI
+   e GDI+, que ja vem com o Windows.
    --------------------------------------------------------------------------- */
 
 // Estilo da janela: barra de titulo, menu do sistema e botao de minimizar.
@@ -1035,20 +1031,19 @@ const DWORD ESTILO_JANELA = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZ
 // Converte unidade base em pixel real conforme a escala atual.
 int px(int valor) { return static_cast<int>(valor * escalaDpi + 0.5f); }
 
-// Reduz `escalaDpi` se o jogo, no DPI do monitor, nao couber na area de
-// trabalho (a tela menos a barra de tarefas).
+// Reduz `escalaDpi` se o jogo nao couber na area de trabalho (a tela menos a
+// barra de tarefas) no DPI do monitor.
 //
-// Por que isso existe: todo desenho passa por px(), que multiplica pela escala
-// do Windows. Num notebook configurado em 125% ou 150%, uma janela de 988x974
-// unidades viraria mais de 1200x1400 pixels reais e ficaria maior que a tela,
-// e o que sairia cortado seria justamente o RODAPE, onde aparecem as mensagens
-// de vitoria e de derrota. Limitando a escala aqui, o jogo se reduz sozinho o
-// quanto for preciso e continua inteiro em qualquer tela, sem que nenhuma
-// outra parte do codigo precise saber disso.
-// A CONTA, separada do Windows para poder ser testada sozinha: dado o espaco
-// que sobra na tela e a escala que o monitor pediu, qual escala usar?
-// Fica com a menor entre "o que cabe na largura" e "o que cabe na altura", e
-// nunca aumenta a escala pedida pelo monitor, so reduz quando preciso.
+// Isso existe porque todo desenho passa por px(), que multiplica pela escala
+// do Windows. Num notebook em 125% ou 150%, a janela ficava maior que a tela
+// e o que sairia cortado seria justo o rodape, onde aparece a mensagem de
+// vitoria/derrota. Limitando a escala aqui, o jogo se reduz sozinho o quanto
+// for preciso e continua inteiro em qualquer tela.
+//
+// A conta fica numa funcao a parte pra dar pra testar sozinha: dado o espaco
+// que sobra na tela e a escala que o monitor pediu, qual escala usar? Fica
+// com a menor entre "cabe na largura" e "cabe na altura", e nunca aumenta a
+// escala pedida pelo monitor, so reduz quando precisa.
 float escalaQueCabe(int larguraDisponivel, int alturaDisponivel, float escalaDesejada) {
     float cabeEmLargura = static_cast<float>(larguraDisponivel) / LARGURA_JOGO;
     float cabeEmAltura = static_cast<float>(alturaDisponivel) / ALTURA_JOGO;
@@ -1207,10 +1202,10 @@ void desenharSpriteNaCelula(Gdiplus::Graphics& g, Gdiplus::Image* imagem,
     g.DrawImage(pronto, x, y, largura, altura);
 }
 
-// [PDF - BOMBA] "Considere: o quadrado cinza parede solida; o quadrado azul
-// parede fragil; o laranja explosao; e o preto a bomba."
-// Cores do terreno, na convencao pedida pelo enunciado. FillRectangle,
-// DrawRectangle, SolidBrush e Pen sao GDI+.
+// [PDF - BOMBA] a convencao de cor pedida: cinza = parede solida, azul =
+// parede fragil, laranja = explosao, preto = bomba (a bomba a gente acabou
+// trocando por um sprite, ver carregarAssets, mais bonito que um quadrado
+// preto). FillRectangle, DrawRectangle, SolidBrush e Pen sao do GDI+.
 void desenharTerrenoCelula(Gdiplus::Graphics& g, const TipoCelula cenario[][COLUNAS], int l, int c) {
     int x = px(c * TAMANHO_CELULA);
     int y = px(l * TAMANHO_CELULA);
@@ -1235,11 +1230,11 @@ void desenharTerrenoCelula(Gdiplus::Graphics& g, const TipoCelula cenario[][COLU
     }
 }
 
-// [PDF - FUNCIONALIDADE 13] "A explosao da bomba devera ser visivel."
-// [PDF - BOMBA] "o laranja explosao"
-// Pinta de laranja cada celula do vetor areaExplosao (que ja reune as chamas de
-// todas as bombas que estao explodindo). Isso e desenhado POR CIMA do terreno,
-// e nao dentro do cache, porque a explosao muda a cada quadro.
+// [PDF - FUNCIONALIDADE 13] a explosao da bomba precisa ser visivel. [PDF -
+// BOMBA] a cor pedida e laranja.
+// Pinta de laranja cada celula do vetor areaExplosao (que ja junta as chamas
+// de todas as bombas que estao explodindo). Isso e desenhado por cima do
+// terreno, fora do cache, porque a explosao muda a cada quadro.
 void desenharExplosaoOverlay(Gdiplus::Graphics& g, const vector<Posicao>& area) {
     if (area.empty()) return;
     Gdiplus::SolidBrush pincel(Gdiplus::Color(255, 255, 158, 35));   // <- a cor da explosao
@@ -1337,13 +1332,12 @@ void desenharHUD(Gdiplus::Graphics& g) {
 }
 
 // Faixa inferior: lista de teclas, regra das cartas e a mensagem de vitoria
-// ou derrota.
-// [PDF - FUNCIONALIDADE 14 / 15] E aqui que o resultado da partida aparece
-// para o jogador.
+// ou derrota. [PDF - FUNCIONALIDADE 14 / 15] e aqui que o resultado da
+// partida aparece pro jogador.
 //
-// A segunda linha explica o bloco dourado (PAREDE_BONUS) para quem esta vendo
-// o jogo pela primeira vez: sem essa explicacao, a regra das cartas so fica
-// clara depois de o jogador quebrar um bloco por acaso e ler o HUD.
+// A segunda linha explica o bloco dourado pra quem ta vendo o jogo pela
+// primeira vez: sem isso, a regra das cartas so fica clara depois que o
+// jogador quebra um bloco por acaso e le o HUD.
 void desenharRodape(Gdiplus::Graphics& g) {
     int y = ALTURA_CABECALHO + LINHAS * TAMANHO_CELULA;
     Gdiplus::SolidBrush fundo(Gdiplus::Color(255, 20, 28, 38));
@@ -1417,7 +1411,7 @@ void lerTeclado(WPARAM tecla, LPARAM lParam) {
     }
 
     if (tecla == 'M') modo = MENU;
-    else if (tecla == ' ') colocarBomba(bombas, jogador, maxBombas);   // [PDF - FUNCIONALIDADE 5]
+    else if (tecla == ' ') colocarBomba(bombas, jogador, maxBombas);   // FUNCIONALIDADE 5
     else if (tecla == 'T') teletransportarJogador();
     else if (tecla == 'R') reiniciar();
     else if (tecla == 'Q' || tecla == VK_ESCAPE) DestroyWindow(janelaPrincipal);
