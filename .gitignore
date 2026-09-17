@@ -1,4 +1,5 @@
 *.exe
+!bomberman.exe
 *.o
 *.obj
 
