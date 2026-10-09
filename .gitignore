@@ -1,7 +1,16 @@
 *.exe
+!/bomberman.exe
+!/modo_insano.exe
 *.o
 *.obj
+ranking.csv
+testes/preview_*.png
+testes/preview_*.gif
+testes/preview_*.png.txt
+modo_insano/batalha_portavel.cpp
 
 # Materiais pessoais para estudar a defesa (nao enviar ao repositorio)
 bomberman_defesa_comentado.cpp
 ROTEIRO_DEFESA.md
+
+.idea/

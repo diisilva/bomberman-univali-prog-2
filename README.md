@@ -1,164 +1,117 @@
 # Bomberman — Algoritmos e Programação II
 
-Trabalho M1 da disciplina de Algoritmos e Programação II da UNIVALI, desenvolvido por Diego Silva e Gabriel Bianchessi.
+Projeto em C++17 para Windows, com Win32, GDI e GDI+. Desenvolvedores: Diego Silva e Gabriel Bianchessi. Sem engine.
 
-O jogo usa uma janela nativa do Windows. A lógica continua em C++ com matriz, structs, vetores e sub-rotinas; a apresentação usa Win32, GDI e GDI+ para desenhar o mapa e os sprites PNG com transparência.
+O menu reúne a campanha acadêmica e o **Modo Insano**, que executa o jogo completo de batalha de sprites.
 
-Esta raiz contém a **versão moderna**. Uma segunda build com aparência clássica ampliada está disponível em [`legado/`](legado/README.md). As duas usam a mesma lógica e os mesmos assets, mas possuem fontes de entrada, scripts de compilação, executáveis e documentos próprios.
+## Compilar e executar
 
-## Tecnologias da interface gráfica
+Os executaveis `bomberman.exe` e `modo_insano.exe` estao incluidos no repositorio.
+Para jogar no Windows 10/11, baixe a pasta completa e abra `bomberman.exe`;
+mantenha `assets/` e `assets_otimizados/` junto dos executaveis. As bibliotecas
+do GCC sao incorporadas ao build, sem exigir MinGW instalado para jogar.
 
-O projeto não utiliza motor gráfico. Unity, Unreal, Godot, GLUT, SDL e SFML não fazem parte da aplicação. A interface foi construída diretamente com recursos nativos do Windows, divididos em três responsabilidades.
-
-### Win32 API: janela, teclado, tempo e eventos
-
-A Win32 API fornece a estrutura básica da aplicação:
-
-- `WinMain()` é o ponto de entrada da versão gráfica e registra a classe da janela;
-- `CreateWindowExW()` cria a janela principal com título, borda e tamanho calculado;
-- `processarMensagem()` recebe as mensagens enviadas pelo Windows;
-- `WM_KEYDOWN` informa quando uma tecla de controle foi pressionada;
-- `WM_TIMER` atualiza periodicamente a lógica do jogo;
-- `WM_PAINT` solicita que o conteúdo da janela seja redesenhado;
-- `WM_DPICHANGED` reajusta a janela quando ela muda para uma tela com outra escala;
-- `WM_DESTROY` encerra o timer, libera os assets e finaliza a aplicação;
-- `GetMessageW()`, `TranslateMessage()` e `DispatchMessageW()` formam o loop de mensagens.
-
-O timer não contém as regras do jogo. Ele calcula o tempo transcorrido e chama `atualizar()`, que continua responsável por bomba, inimigos, colisões, vitória, derrota e modo automático. Assim, a API do Windows coordena quando atualizar e desenhar, mas não decide o gameplay.
-
-### GDI: formas geométricas e buffer duplo
-
-GDI é a parte tradicional da API gráfica do Windows. Neste projeto, ela fornece os contextos e bitmaps necessários para montar cada quadro fora da tela:
-
-1. `BeginPaint()` entrega o contexto de desenho da janela;
-2. `CreateCompatibleDC()` cria um contexto de memória;
-3. `CreateCompatibleBitmap()` cria um bitmap com o tamanho da área útil;
-4. todo o HUD, mapa, formas e sprites é desenhado primeiro nesse bitmap;
-5. `BitBlt()` copia o quadro pronto para a janela em uma única operação;
-6. os objetos temporários são restaurados e liberados com `DeleteObject()` e `DeleteDC()`.
-
-Esse processo é chamado de **buffer duplo**. Sem ele, o usuário poderia enxergar a janela sendo apagada e redesenhada por partes, produzindo flickering. O mapa básico também usa retângulos e linhas: chão verde, parede sólida cinza, parede frágil azul, explosão laranja e grade de separação.
-
-### GDI+: PNG, alpha e qualidade de escala
-
-GDI+ complementa o GDI com suporte simples a imagens PNG e transparência:
-
-- `GdiplusStartup()` inicializa a biblioteca uma vez antes da janela;
-- `Gdiplus::Image` carrega `bomberman.png`, `perfil.png` e `bomba.png`;
-- os objetos ficam armazenados em `unique_ptr` e são reutilizados em todos os quadros;
-- `DrawImage()` desenha o PNG preservando o canal alpha;
-- `InterpolationModeHighQualityBicubic` melhora a redução das imagens originais;
-- `GdiplusShutdown()` encerra a biblioteca depois que a janela fecha.
-
-`desenharSpriteNaCelula()` calcula um único fator de escala:
-
-```text
-escala = min(largura disponível / largura original,
-             altura disponível / altura original)
-```
-
-O mesmo fator é aplicado à largura e à altura. Depois, a função calcula o espaço restante e centraliza o sprite, mantendo uma margem de quatro unidades-base. Isso evita achatamento, alongamento, corte e desalinhamento. O alpha original produz o fundo transparente ao redor do personagem, do inimigo e da bomba.
-
-### Relação com a lógica da disciplina
-
-Win32, GDI e GDI+ formam somente a camada de entrada e apresentação. O mapa continua em uma matriz, as entidades continuam em structs e vetores, e as regras continuam implementadas nas sub-rotinas do próprio projeto. A renderização consulta o estado atual, mas não altera as regras de colisão, explosão ou movimentação.
-
-## Pré-requisitos
-
-- Windows 10 ou Windows 11;
-- GCC/G++ com suporte a C++17 (recomendado: MSYS2 UCRT64);
-- PowerShell;
-- nenhuma biblioteca externa: GDI e GDI+ fazem parte do Windows.
-
-## Como compilar
-
-No PowerShell, dentro da pasta do projeto:
+Requisitos: Windows 10/11, PowerShell e GCC/MinGW C++17. O script procura `g++` no PATH e em `C:\msys64\ucrt64\bin\g++.exe`.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\compilar.ps1
-```
-
-O comando equivalente é:
-
-```powershell
-g++ -std=c++17 -Wall -Wextra -pedantic bomberman.cpp -o bomberman.exe -lgdiplus -mwindows
-```
-
-Se `g++` não estiver no `Path`, o script tenta automaticamente `C:\msys64\ucrt64\bin\g++.exe`. Caso precise instalar o compilador, abra o terminal MSYS2 UCRT64 e execute:
-
-```bash
-pacman -Syu
-pacman -S --needed mingw-w64-ucrt-x86_64-gcc
-```
-
-Se a compilação informar que `bomberman.exe` está em uso, feche uma instância anterior do jogo e tente novamente.
-
-## Como executar
-
-```powershell
 .\bomberman.exe
 ```
 
-A janela abre com tamanho calculado a partir de células de 52×52 pixels, além de áreas reservadas ao cabeçalho e ao rodapé. Em escala de 100%, sua área útil é de 780×852 pixels. O programa é DPI-aware e reajusta desenho, texto e sprites de acordo com a escala do Windows.
+O build gera `bomberman.exe` e `modo_insano.exe`. Feche instâncias anteriores antes de recompilar. Python e Pillow são usados somente pelos scripts opcionais que regeneram os sprites; não são necessários para jogar.
 
-Os assets são procurados relativamente ao executável:
+Assets são carregados uma vez, a partir da pasta do executável. Mantenha `assets/`, `assets_otimizados/` e os dois executáveis juntos. A janela permite redimensionar e maximizar, mantendo a proporção e centralizando o desenho.
 
-- `assets/bomberman.png`: jogador;
-- `assets/perfil.png`: inimigos;
-- `assets/bomba.png`: bomba.
+## Menu
 
-Eles são carregados uma única vez na inicialização. Se algum arquivo não estiver disponível, o jogo informa o caminho e usa `PJ`, `IN` ou `BO` como fallback, sem encerrar inesperadamente.
-
-## Menu e controles
-
-| Tecla | Ação |
+| Opção | Ação |
 | --- | --- |
-| `1` no menu | Iniciar modo manual |
-| `2` no menu | Iniciar modo automático 1,5x |
-| `W`, `A`, `S`, `D` ou setas | Movimentar o jogador |
-| `Espaço` | Colocar uma bomba |
-| `R` | Reiniciar a partida |
-| `M` | Voltar ao menu |
-| `Q` ou `Esc` | Encerrar o jogo |
+| 1 | Campanha manual |
+| 2 | Campanha automática |
+| 3–6 | Como jogar, dificuldades, pontuação e ranking |
+| 7 | Escolher personagens |
+| 8 | Seletor de fases |
+| 9 | Modo Insano |
+| P | Ativar/desativar P2 cooperativo na campanha |
+| Q / Esc | Sair |
 
-No modo automático, o jogador usa busca em largura para procurar inimigos e paredes frágeis, coloca bombas, tenta fugir da área de explosão e reinicia automaticamente após uma derrota.
+Escolha dificuldade, personagem e fase inicial. Nas skins: 1–4 selecionam, Tab alterna P1/P2 e Enter abre as fases. Na galeria: 1–8 ou setas selecionam e Enter inicia. Cartões também aceitam mouse.
 
-## Elementos visuais
+Branco, preto, azul e vermelho têm as mesmas habilidades. A escolha muda aparência, caminhada e poses finais.
 
-| Elemento | Representação |
+## Campanha
+
+As três arenas anteriores foram preservadas; as demais vêm do estudo. A campanha segue da fase selecionada até a oitava.
+
+| Fase | Arena |
 | --- | --- |
-| Jogador | Sprite `bomberman.png` |
-| Inimigo | Sprite `perfil.png` |
-| Bomba | Sprite `bomba.png` |
-| Chão | Retângulo verde |
-| Parede sólida | Retângulo cinza com detalhe |
-| Parede frágil | Retângulo azul |
-| Explosão | Retângulo laranja |
+| 1 | Casino Azul |
+| 2 | Masmorra |
+| 3 | Fábrica Neon |
+| 4 | Ruínas de Pedra |
+| 5 | Cânion Ceedrun |
+| 6 | Selva Viva |
+| 7 | Laboratório |
+| 8 | Templo Arcano |
 
-`desenharSpriteNaCelula()` preserva a proporção original, aplica margem e centraliza o PNG. A escala usada é o menor valor entre a largura e a altura disponíveis, evitando corte ou deformação. A tela inteira é montada em um buffer secundário e copiada de uma vez para a janela, reduzindo flickering.
+Limpe os inimigos e entre no portal. Nas fases 2, 4, 6 e 8, derrote tambem o chefe para abrir o portal. Facil tem tres inimigos normais, perseguicao limitada e ritmo mais tranquilo; Medio e Dificil tem cinco e sete.
 
-## Organização do código
+| Tecla | Ação na campanha |
+| --- | --- |
+| WASD ou setas | Mover P1; com cooperativo, setas ficam com P2 |
+| Espaço / Enter | Bomba de P1 / P2 |
+| E | Chutar bomba, após obter item |
+| T | Teletransportar, após obter item |
+| F | Detonar bombas-relógio |
+| R | Reiniciar; após morte, aguarda a animação terminar |
+| M | Menu |
+| Q / Esc | Sair |
 
-- `TipoCelula`, `EstadoJogo` e `ModoJogo` representam os estados principais;
-- `Posicao`, `Inimigo` e `Bomba` agrupam os dados das entidades;
-- `mapa[LINHAS][COLUNAS]` mantém o cenário em uma matriz fixa;
-- `vector<Inimigo>` e `vector<Posicao>` guardam inimigos e células da explosão;
-- `criarMapa()`, `moverJogador()`, `moverInimigos()`, `colocarBomba()`, `iniciarExplosao()`, `atualizarBomba()` e `atualizarBot()` preservam a lógica do jogo;
-- `carregarAssets()` e `liberarAssets()` controlam o ciclo de vida dos PNGs;
-- `desenharMapa()`, `desenharCelula()`, `desenharHUD()` e `desenharSpriteNaCelula()` cuidam somente da apresentação;
-- `processarMensagem()` recebe teclado, timer, pintura, DPI e fechamento da janela.
+Vidas, pontuação e itens são compartilhados no cooperativo. Bônus de fase são reiniciados ao trocar/repetir fase. Recompensas usam ícones distintos para fogo, bomba extra, vida, relógio, proteção, atravessar blocos, chute e teleporte. Blocos especiais não mostram pistas do conteúdo.
 
-## Arquivos
+A morte toca nove poses no local do personagem atingido antes de exibir continuar/game over. O movimento termina cada passo antes da curva; a última direção pressionada tem prioridade. Contato e dano seguem a posição atual dos corpos, sem atingir antecipadamente por uma casa de destino reservada.
 
-- `bomberman.cpp`: fonte oficial do jogo;
-- `assets/`: sprites PNG;
-- `compilar.ps1`: compilação reproduzível;
-- `DEFESA.md`: documento oficial de defesa da versão moderna;
-- `legado/bomberman_legado.cpp`: entrada da edição clássica;
-- `legado/compilar_legado.ps1`: build separada da edição clássica;
-- `legado/README.md` e `legado/DEFESA.md`: documentação oficial da edição clássica;
-- `bomberman_defesa_comentado.cpp`: guia compilável de leitura do fonte;
-- `ROTEIRO_DEFESA.md`: roteiro para a apresentação acadêmica;
-- `README.md`: instruções do projeto.
+O ranking é salvo em `ranking.csv`, ao terminar uma partida manual. A fórmula aparece no menu e usa inimigos, caixas, itens, fases, movimentos e bombas.
 
-O arquivo `bomberman.exe` é gerado localmente e não precisa ser versionado.
+Chefes da campanha:
+
+| Fase | Chefe | Poder | HP |
+|---|---|---|---|
+| 2 | Golem da Masmorra | Machados e facoes giratorios (Metal Slug) direcionados | 48 |
+| 4 | Egg-HVC / Demolidor | Disparos de energia e investida ortogonal com preparacao | 64 |
+| 6 | Hidra da Selva | Rajadas de veneno animadas que deixam pocas persistentes | 80 |
+| 8 | Guardiao Arcano | Avancos e bolas de fogo do Modo Insano | 100 |
+
+Em cada fase de chefe, Mario esta escondido em um bloco quebravel comum, sem
+marca. Exploda o bloco para liberta-lo. Ele ajuda automaticamente: movimento
+ortogonal a 4,2 casas/s, tres vidas, dois segundos de protecao inicial e 1,6 s
+apos sofrer dano. Lanca macas em arco a cada 1,05 s, elimina inimigos, detona
+bombas, quebra caixas e causa 3 de dano ao chefe. As macas seguem os tempos,
+trajetoria, sprites e regras de impacto do estudo; os alvos sao os inimigos da
+campanha. Mario coleta macas extras para recarregar. Proteja-o: perder suas tres
+vidas causa derrota, como no Insano. Fases impares nao possuem Mario escondido.
+
+## Modo Insano
+
+Executa uma cópia integral do jogo de `estudos_sprite/batalha.cpp`: quatro Bombermans, Mario, Ceedrun, sentinelas, maçãs, projéteis, oito arenas e boss original de 100 HP. Mecânicas e controles permanecem iguais ao estudo; somente o caminho dos assets foi tornado relativo.
+
+Enter alterna White/automático; M alterna Mario/automático; WASD move; Espaço usa bomba/maçã; T alterna arenas; P pausa; R reinicia; L ativa câmera lenta; Esc fecha. Ao fechar o Insano, o menu principal reaparece. Ele não escreve no ranking CSV da campanha.
+
+Origem, hash do fonte e validação: [modo_insano/README.md](modo_insano/README.md).
+
+## Organização e validação
+
+- `bomberman.cpp`: fonte oficial da campanha; matriz 13×15, structs, vetores e sub-rotinas.
+- `modo_insano/batalha_referencia.cpp`: cópia preservada do estudo.
+- `compilar.ps1`: gera os dois executáveis; fonte portátil do Insano é gerado no build.
+- `testes/`: regressões de colisão, fluidez, seleção, assets e combate original do Insano.
+- `PROGRESSO_M2.md` e `HANDOFF_CODEX.md`: estado e decisões recentes.
+- `DEFESA.md` e `ROTEIRO_DEFESA.md`: materiais de defesa que ainda precisam da revisão completa para M2.
+
+Win32 cuida de janela, teclado, tempo e DPI. GDI apresenta o buffer duplo; GDI+ desenha sprites com alpha e pixel art. Terreno e fontes usam cache. BFS template, explosão recursiva, sobrecargas, parâmetro default, structs e arquivo permanecem na campanha.
+
+Instruções dos testes e geração de previews: [testes/README.md](testes/README.md). Testes isolados não abrem janela, não enviam teclas e não alteram o ranking. O controle real, maximizar e a transição entre janelas devem ser avaliados jogando.
+
+## Créditos de assets
+
+Assets fornecidos para estudo acadêmico de Bomberman/Hudson/Konami. Folhas trazem créditos de Cyber Wolf, Roviozza, raccoon sam (2012), JCGBR e Boo; Mario por ItsMeRen. Originais foram preservados. Ícones e recortes derivados mantêm esses créditos.

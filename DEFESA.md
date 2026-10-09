@@ -1,10 +1,13 @@
-# Defesa — versão moderna
+# Defesa
 
-Este é o documento oficial de defesa da versão moderna. O arquivo `ROTEIRO_DEFESA.md` pode continuar como material pessoal complementar.
+Este é o documento oficial de defesa do jogo. O arquivo `ROTEIRO_DEFESA.md` pode continuar como material pessoal complementar.
+
+> Nota: este documento ainda descreve o escopo da M1. Será atualizado com fases, dificuldades,
+> boss, itens e os demais itens da M2 conforme `PLANO_M2.md`/`PROGRESSO_M2.md` forem concluídos.
 
 ## Visão geral
 
-A versão moderna mantém toda a lógica acadêmica do Bomberman em C++ e substitui somente a antiga apresentação de console por uma janela nativa. Ela usa células de 52×52, área útil de 780×852 pixels em escala de 100% e sprites PNG proporcionais.
+O jogo mantém toda a lógica acadêmica do Bomberman em C++ e usa uma janela nativa do Windows em vez de console. Ele usa células de 52×52, área útil de 780×852 pixels em escala de 100% e sprites PNG proporcionais.
 
 ## Conteúdos da disciplina
 
@@ -46,7 +49,3 @@ Não existe motor gráfico. Essas APIs cuidam de entrada e apresentação; as re
 5. mostrar vitória ou derrota;
 6. executar o modo automático 1,5x;
 7. explicar no código a separação entre lógica e renderização.
-
-## Diferença para a edição legada
-
-A edição em `legado/` usa a mesma lógica e os mesmos assets, mas ativa `VERSAO_LEGADO` para selecionar células de 56×56, fonte Consolas, fundo preto, cores fortes e molduras semelhantes ao antigo console.
