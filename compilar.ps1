@@ -18,7 +18,7 @@ $pastaProjeto = Split-Path -Parent $MyInvocation.MyCommand.Path
 $arquivoFonte = Join-Path $pastaProjeto "bomberman.cpp"
 $arquivoExecutavel = Join-Path $pastaProjeto "bomberman.exe"
 
-& $compilador -std=c++17 -O2 -Wall -Wextra -pedantic -static $arquivoFonte -o $arquivoExecutavel -lgdiplus -lwinmm -mwindows
+& $compilador -std=c++17 -O2 -Wall -Wextra -pedantic -static $arquivoFonte -o $arquivoExecutavel -lgdiplus -lwinmm -ldinput8 -ldxguid -mwindows
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "A compilacao falhou."

@@ -11,6 +11,8 @@ WASD/setas: mover | Espaco: bomba | R: reiniciar | Q ou ESC: sair
 #include <windows.h>
 #include <mmsystem.h>
 #include <gdiplus.h>
+#include <dinput.h>
+#include <xinput.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -26,6 +28,7 @@ WASD/setas: mover | Espaco: bomba | R: reiniciar | Q ou ESC: sair
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "bosses_animacoes.h"
 
 #ifdef _MSC_VER
 #pragma comment(lib, "gdiplus.lib")
@@ -56,14 +59,17 @@ const int CHANCE_PERSEGUICAO_FACIL = 25;
 const int CHANCE_PERSEGUICAO_MEDIO = 50;
 const int CHANCE_PERSEGUICAO_DIFICIL = 75;
 const int ALCANCE_CHUTE = 4;
-const int TOTAL_FASES = 8;
+const int TOTAL_FASES = 10;
 const wchar_t* NOMES_FASES[] = {L"CASINO AZUL",L"MASMORRA",L"FABRICA NEON",L"RUINAS DE PEDRA",
-                              L"CANION CEEDRUN",L"SELVA VIVA",L"LABORATORIO",L"TEMPLO ARCANO"};
+                              L"CANION CEEDRUN",L"SELVA VIVA",L"CAVERNA CONGO",L"TEMPLO ARCANO",L"MUNDO BOMBER",L"VALE LANGRISSER"};
 const int INDICES_ATLAS_FASES[] = {1,4,0,2,3,5,6,7};
 const int DURACAO_MORTE_MS = 1170;
 const int VIDA_BOSS = 100;
-const int INTERVALO_MOVIMENTO_BOSS_MS = 4000;
-const int INTERVALO_ATAQUE_BOSS_MS = 4500;
+const float FATOR_FORCA_BOSS = 1.15f;
+// 10% mais lento que o ajuste anterior (.85).
+const float FATOR_MARIO = .765f;
+const int INTERVALO_MOVIMENTO_BOSS_MS = int(4000 / FATOR_FORCA_BOSS);
+const int INTERVALO_ATAQUE_BOSS_MS = int(4500 / FATOR_FORCA_BOSS);
 const int IMUNIDADE_BOSS_MS = 700;
 // Formula de pontuacao (secao 9 do PLANO_M2.md), tambem mostrada por extenso
 // na tela "Pontuacao" do menu - os mesmos valores em um lugar so.
@@ -100,6 +106,9 @@ enum TipoItem { CHUTE, TELEPORTE, RAIO, BOMBA_EXTRA, VIDA_EXTRA, BOMBA_RELOGIO, 
 enum Dificuldade { FACIL, MEDIO, DIFICIL };
 
 struct Posicao { int linha, coluna; };
+enum EtapaHornet { H_IDLE,H_CORRIDA,H_PREP_AGULHA,H_LANCAR,H_VOO_AGULHA,H_RECOLHER,
+    H_PREP_DASH,H_DASH,H_RECUP_DASH,H_PREP_SALTO,H_SALTO,H_PREP_GIRO,H_GIRO,H_POUSO,
+    H_PREP_AEREO,H_AEREO,H_RECUP_AEREO,H_GUARDA,H_CONTRA,H_RECUP_CONTRA,H_DANO,H_RECUP_DANO };
 // "especial" marca o inimigo mais inteligente da ultima fase: ele ignora a
 // distancia/chance de perseguicao normais e persegue sempre (ver moverInimigos).
 struct Inimigo {
@@ -115,6 +124,9 @@ struct Inimigo {
     // montarFase) - so anda sozinha durante o jogo normal, via avancarVisual.
     float visualL = 0, visualC = 0;
     float distanciaAnimacao = 0;
+    // Medio: metade dos inimigos solta bombas; Dificil: 75% (ver montarFase).
+    bool soltaBomba = false;
+    int recargaBombaMs = 0;
 };
 // Agora existe um vetor de bombas (item "bomba+1" permite mais de uma ao
 // mesmo tempo); cada bomba guarda sua propria area de explosao calculada,
@@ -129,7 +141,11 @@ struct Bomba {
     bool relogio = false;
     bool bossAtingido = false;
     vector<Posicao> celulasExplosao;
+    int dono = 0; // 0 = P1 (ou bot), 1 = P2, DONO_INIMIGO = bomba de inimigo
 };
+const int DONO_INIMIGO = 2;
+const int ALCANCE_BOMBA_INIMIGO = 2;
+const int RECARGA_BOMBA_INIMIGO_MIN_MS = 3500, RECARGA_BOMBA_INIMIGO_MAX_MS = 6000;
 struct Item { Posicao posicao; TipoItem tipo; };
 struct BlocoBonus { Posicao posicao; TipoItem tipo; };
 
@@ -146,6 +162,12 @@ struct Boss {
     int imunidadeMs = 0;
     bool investindo = false, investidaPendente = false;
     int avisoInvestidaMs = 0, animAtaqueMs = 0, sequenciaAtaque = 0;
+    int acaoEspecial = 0, tempoEspecialMs = 0, relogioPoseMs = 0, morteMs = 0;
+    bool olhandoDireita = false;
+    EtapaHornet etapaHornet=H_IDLE;
+    int tempoEtapaHornetMs=0,duracaoEtapaHornetMs=0;
+    float alturaHornet=0;
+    bool contraPendenteHornet=false;
 };
 
 // Contadores da partida em andamento; usados tanto no HUD quanto no calculo
@@ -156,6 +178,11 @@ struct EstatisticasPartida {
     int itensColetados = 0;
     int caixasDestruidas = 0;
     int inimigosAbatidos = 0;
+    int movimentosFase = 0;
+    int bombasFase = 0;
+    // Parte de cada jogador, gravada no ranking quando jogam dois.
+    int movimentosJogador[2]{};
+    int bombasJogador[2]{};
 };
 
 // Uma linha do arquivo de ranking: data, jogador, pontuacao, bombas e
@@ -187,11 +214,22 @@ bool teclaPressionada[256]{};
 unsigned long long ordemTecla[256]{}, proximaOrdemTecla=0;
 EstatisticasPartida estatisticas;
 bool registroSalvo = false;
+bool erroSalvarRanking = false;
 wstring nomeJogador = L"";
+wstring nomeJogador2 = L"";
+// Campo editado na tela de nomes (1 = P1, 2 = P2).
+int campoNome = 1;
+bool editandoNome = false, selecionarNome = false;
+size_t cursorNome = 0;
+wstring avisoNome;
+int rankingSelecionado=0;
+string nomeConfirmadoRanking, nomeConfirmadoRanking2, nomeOriginalRanking;
+wstring nomeAntesEdicaoRanking;
+wstring avisoRanking;
 // As telas do menu (fora do jogo em si): principal, escolha de dificuldade
 // (antes de comecar a jogar), ranking e as 3 telas so-informativas pedidas
 // pelo enunciado (como jogar, dificuldades, pontuacao).
-enum TelaMenu { MENU_PRINCIPAL, MENU_DIFICULDADE, MENU_RANKING, MENU_COMO_JOGAR, MENU_DIFICULDADES_INFO, MENU_PONTUACAO, MENU_PERSONAGENS, MENU_FASES };
+enum TelaMenu { MENU_PRINCIPAL, MENU_DIFICULDADE, MENU_RANKING, MENU_COMO_JOGAR, MENU_DIFICULDADES_INFO, MENU_PONTUACAO, MENU_PERSONAGENS, MENU_FASES, MENU_QUANTIDADE_JOGADORES, MENU_ATRIBUICAO_CONTROLES, MENU_NOMES };
 int faseSelecionada = 1;
 int personagemP1 = 0, personagemP2 = 1;
 int jogadorEmSelecao = 1;
@@ -199,14 +237,43 @@ const wchar_t* nomesPersonagens[] = {L"BRANCO", L"PRETO", L"AZUL", L"VERMELHO"};
 unique_ptr<Gdiplus::Image> personagens[4], posesVitoria[4], posesDerrota[4];
 unique_ptr<Gdiplus::Image> spriteItens;
 TelaMenu telaMenu = MENU_PRINCIPAL;
+// Para onde a tela de nomes segue (atalhos 7/8 voltam ao seletor de fases).
+TelaMenu telaAposNomes = MENU_ATRIBUICAO_CONTROLES;
 Dificuldade dificuldade = FACIL;
 int faseAtual = 1;
 ModoJogo modoPendente = MANUAL;
 // Segundo jogador (cooperativo local, so no modo manual): setas + Enter.
-// Vidas, pontos, itens e o limite de bombas sao compartilhados com o
-// jogador 1 - time unico, nao e um "versus". So a posicao/direcao/cooldown
-// de movimento sao proprios de cada jogador.
+// Vidas e itens sao do time; cada jogador tem seu proprio limite de bombas.
+// No modo INIMIGOS (modoRivais) as bombas ferem o rival e os pontos de cada
+// um sao separados em pontosJogador.
 bool doisJogadores = false;
+// Modo de 2 jogadores: AMIGOS (a bomba de um nao fere o outro) ou INIMIGOS
+// (todos contra todos, cada um com sua pontuacao no ranking).
+bool modoRivais = false;
+int pontosJogador[2]{};
+// Tres coisas separadas: quantos jogam (doisJogadores), qual dispositivo cada
+// um escolheu na tela de atribuicao e se ha um joystick conectado agora.
+// Plugar um controle nunca cria jogador; so a escolha no menu faz isso.
+enum Dispositivo { TECLADO, JOYSTICK };
+Dispositivo dispositivoP1 = TECLADO, dispositivoP2 = TECLADO;
+bool controleConectado = false;
+bool controleSwitchSemLeitura = false;
+bool botaoBombaControleAnterior = false;
+enum OrigemControle { SEM_CONTROLE, CONTROLE_SDL, CONTROLE_XINPUT, CONTROLE_GENERICO };
+OrigemControle origemControle = SEM_CONTROLE;
+wstring nomeControle;
+// bomba = A ou B; confirmar/voltar sao os mesmos botoes lidos nos menus.
+struct EntradaControle { int dl=0,dc=0;bool bomba=false,confirmar=false,voltar=false,chute=false,teleporte=false,detonar=false,start=false,select=false; };
+EntradaControle entradaControle, controleMenuAnterior;
+using FuncaoXInputGetState = DWORD (WINAPI*)(DWORD,XINPUT_STATE*);
+HMODULE bibliotecaXInput = nullptr;
+FuncaoXInputGetState obterEstadoXInput = nullptr;
+bool tentouCarregarXInput = false;
+IDirectInput8W* entradaDireta = nullptr;
+IDirectInputDevice8W* controleDireto = nullptr;
+ULONGLONG proximaBuscaControle = 0;
+struct FaixaEixo { LONG minimo=-1000,maximo=1000; bool disponivel=true; };
+FaixaEixo faixasControle[4];
 Posicao jogador2{1, 2};
 Posicao direcaoJogador2{0, 1};
 int tempoMovimentoMs2 = 0;
@@ -218,18 +285,30 @@ float jogador2VisualL = 1, jogador2VisualC = 2;
 float distanciaAnimacaoJogador = 0, distanciaAnimacaoJogador2 = 0;
 int tempoFimMs = 0;
 int jogadoresAtingidos = 0;
+// Dois jogadores (amigos ou inimigos): 3 vidas para cada um em cada fase.
+// Quem cai toca a queda e renasce protegido; sem vidas, fica fora ate a
+// proxima fase enquanto o outro continua.
+const int VIDAS_POR_JOGADOR = 3;
+const int IMUNIDADE_RENASCER_MS = 2000;
+bool jogadorCaido[2]{};
+int tempoQuedaMs[2]{};
+int vidasJogador[2]{VIDAS_POR_JOGADOR, VIDAS_POR_JOGADOR};
+int imunidadeJogadorMs[2]{};
 int tempoPartidaMs = 0;
 unique_ptr<Gdiplus::Image> spriteVitoria, spriteDerrota;
 bool portalAtivo = false;
 Posicao portalPosicao{0, 0};
-enum PoderBoss { MACHADO, ENERGIA, VENENO, CHUVA_FOGO };
-const wchar_t* NOMES_BOSSES[]={L"GOLEM DA MASMORRA",L"EGG-HVC / DEMOLIDOR",L"HIDRA DA SELVA",L"GUARDIAO ARCANO"};
-const wchar_t* PODERES_BOSSES[]={L"Machados e facoes giratorios",L"Energia e investida: saia da frente!",L"Rajada de veneno: evite as pocas",L"Fogo: desvie dos projeteis"};
-int indiceBoss(){return max(0,min(3,faseAtual/2-1));}
-int vidaMaximaBoss(){const int vidas[]={48,64,80,VIDA_BOSS};return vidas[indiceBoss()];}
+enum PoderBoss { MACHADO, ENERGIA, VENENO, CHUVA_FOGO, AGULHA, FIO, FOGO_BOWSER, GOLPE_BOWSER };
+const wchar_t* NOMES_BOSSES[]={L"GOLEM DA MASMORRA",L"EGG-HVC / DEMOLIDOR",L"HORNET DA SELVA",L"GUARDIAO ARCANO",L"BOWSER"};
+const wchar_t* PODERES_BOSSES[]={L"Machados e facoes giratorios",L"Energia e investida: saia da frente!",L"Agulha / fio / investida",L"Fogo: desvie dos projeteis",L"Fogo / casco / salto"};
+int indiceBoss(){return max(0,min(4,faseAtual/2-1));}
+bool bossAnimado(){return indiceBoss()==2 || indiceBoss()==4;}
+int vidaMaximaBoss(){const int vidas[]={48,64,80,VIDA_BOSS,112};return int(round(vidas[indiceBoss()]*FATOR_FORCA_BOSS));}
+int larguraBoss(){return indiceBoss()==2?2:3;}
 struct AreaBoss { Posicao posicao; int avisoMs, ativoMs; PoderBoss poder; };
 vector<AreaBoss> areasBoss;
-struct ProjetilBoss { float l,c,vl,vc,idade,vida; PoderBoss poder; int avisoMs; int arma = 0; };
+struct ProjetilBoss { float l,c,vl,vc,idade,vida; PoderBoss poder; int avisoMs; int arma = 0;
+    float origemL=0,origemC=0;bool retornando=false; };
 struct ImpactoBoss { float l,c,idade; PoderBoss poder; };
 vector<ProjetilBoss> projeteisBoss;
 vector<ImpactoBoss> impactosBoss;
@@ -240,6 +319,7 @@ struct MarioAliado {
     float pensar=0,imunidade=0,distancia=0,recarga=0,pose=0;
     bool ativo=false,andando=false,escondido=false;
     Posicao bloco{0,0};
+    int dono=-1; // Modo inimigos: jogador que o libertou (0/1); ataca o outro.
 } marioAliado;
 struct MacaMario { float sx,sy,tx,ty,idade=0,duracao=1; };
 vector<MacaMario> macasMario;
@@ -248,6 +328,7 @@ const int MARIO_DC[]={0,-1,0,1},MARIO_DL[]={1,0,-1,0};
 struct FogoBoss { float l, c, vl, vc, vida; };
 vector<FogoBoss> fogosBoss;
 Boss boss;
+bool hornetNoAr(){return indiceBoss()==2 && boss.alturaHornet>26;}
 vector<Posicao> perigoBoss;
 int tempoPerigoBossMs = 0;
 bool bossIniciado = false;
@@ -271,7 +352,14 @@ unique_ptr<Gdiplus::Image> spriteFogoBoss;
 unique_ptr<Gdiplus::Bitmap> spritesBossCampanha[3];
 unique_ptr<Gdiplus::Bitmap> spriteMachadoBoss, facoesBoss[5], posesEggBoss[2], energiaBoss[4], venenoBoss[4], impactoBoss[4];
 unique_ptr<Gdiplus::Bitmap> quadrosMario[4][3],spriteMacaMario;
+unique_ptr<Gdiplus::Image> atlasHornet, atlasBowser, spriteArenasNovas;
+unique_ptr<Gdiplus::Image> spriteArenaCongo;
+unordered_map<int,unique_ptr<Gdiplus::Bitmap>> cacheQuadrosBoss[2];
+unique_ptr<Gdiplus::Bitmap> spritesAgulhaBoss[3], spritesFioBoss[5], spritesFogoBowser[4];
+unique_ptr<Gdiplus::Bitmap> fiosAgulhaBoss[3], efeitosDashHornet[5];
 Gdiplus::Image* imagemBossAtual(){int i=indiceBoss();
+    if(i==2)return atlasHornet.get();
+    if(i==4)return atlasBowser.get();
     if(i==1 && boss.investindo && posesEggBoss[1])return posesEggBoss[1].get();
     if(i==1 && boss.movendo && (int(boss.visualC*3+boss.visualL*3)%2) && posesEggBoss[0])return posesEggBoss[0].get();
     return i<3?spritesBossCampanha[i].get():spriteBoss.get();}
@@ -288,6 +376,7 @@ int relogioAnimacaoMs = 0;
 // precisam do cache de pre-escala, ja que o GDI+ recorta+escala num unico
 // blit, do mesmo jeito que ja desenha o sprite inteiro hoje).
 unique_ptr<Gdiplus::Image> spriteInimigoDirecional;
+unique_ptr<Gdiplus::Bitmap> spriteInimigoVerde;
 // Tilesets de chao/parede/caixa por fase - coordenadas de recorte validadas
 // em D:\algoritmos_prog_2\estudos_sprite\batalha.cpp (funcao sourceTiles),
 // reaproveitadas aqui so pelas coordenadas, sem copiar codigo daquele
@@ -295,6 +384,8 @@ unique_ptr<Gdiplus::Image> spriteInimigoDirecional;
 unique_ptr<Gdiplus::Image> spriteTemaFase1; // SNES Stage 2-5 (Casino Azul)
 unique_ptr<Gdiplus::Image> spriteTemaFase3; // SNES Stage 6-3 (Fabrica Neon)
 unique_ptr<Gdiplus::Image> spriteArenasEstudo;
+unique_ptr<Gdiplus::Bitmap> spriteCaixaSelva;
+unique_ptr<Gdiplus::Bitmap> spritePedraSelva;
 // Fase 2 usa o tileset Dungeon do GameCube, que e gigante (2054x2903px, ~23MB
 // descomprimido) - o estudo em estudos_sprite/EXPLICACAO_SPRITES_CPP.md (secao
 // 8) mediu 3-4s por redesenho de terreno ao recortar repetidas vezes direto
@@ -329,6 +420,213 @@ unique_ptr<Gdiplus::Bitmap> cacheSpriteBoss;
 
 void invalidarCacheMapa() { cacheMapaSujo = true; }
 
+// Leitura de joystick em tres caminhos, nesta ordem de preferencia:
+// 1) SDL2 GameController (SDL2.dll ao lado do exe): le Switch Pro/8BitDo pelo
+//    protocolo HID proprio (o mesmo caminho do PCSX2), Xbox, PlayStation etc.
+// 2) XInput: controles compativeis com Xbox, se a SDL2.dll faltar.
+// 3) DirectInput: outros controles genericos HID/USB.
+// So um controle e usado por vez; o menu decide se ele pertence a P1 ou P2.
+wstring pastaDoExecutavel();
+EntradaControle direcaoDoControle(int x,int y,int limite){
+    EntradaControle e;
+    if(abs(x)<limite && abs(y)<limite)return e;
+    if(abs(x)>abs(y))e.dc=x>0?1:-1;
+    else e.dl=y>0?1:-1;
+    return e;
+}
+// Monta a entrada a partir do direcional (prioridade) ou do analogico, mais
+// os botoes no layout padrao: A/B bomba, X chute, Y teleporte, L/R detonar.
+EntradaControle montarEntrada(bool cima,bool baixo,bool esq,bool dir,int x,int y,int limite,
+                              bool a,bool b,bool xb,bool yb,bool ombro,bool start,bool select){
+    EntradaControle e;
+    if(cima)e.dl=-1;else if(baixo)e.dl=1;else if(esq)e.dc=-1;else if(dir)e.dc=1;
+    else e=direcaoDoControle(x,y,limite);
+    e.confirmar=a;e.voltar=b;e.bomba=a||b;e.chute=xb;e.teleporte=yb;e.detonar=ombro;e.start=start;e.select=select;
+    return e;
+}
+EntradaControle traduzirXInput(const XINPUT_GAMEPAD& g){
+    WORD b=g.wButtons;
+    return montarEntrada(b&XINPUT_GAMEPAD_DPAD_UP,b&XINPUT_GAMEPAD_DPAD_DOWN,b&XINPUT_GAMEPAD_DPAD_LEFT,b&XINPUT_GAMEPAD_DPAD_RIGHT,
+                         int(g.sThumbLX),-int(g.sThumbLY),10500,b&XINPUT_GAMEPAD_A,b&XINPUT_GAMEPAD_B,b&XINPUT_GAMEPAD_X,b&XINPUT_GAMEPAD_Y,
+                         b&(XINPUT_GAMEPAD_LEFT_SHOULDER|XINPUT_GAMEPAD_RIGHT_SHOULDER),b&XINPUT_GAMEPAD_START,b&XINPUT_GAMEPAD_BACK);
+}
+EntradaControle traduzirDirectInput(const DIJOYSTATE2& g){
+    DWORD pov=g.rgdwPOV[0];
+    bool cima=false,baixo=false,esq=false,dir=false;
+    if(pov!=0xffffffff){
+        if(pov<=4500 || pov>=31500)cima=true;
+        else if(pov>=13500 && pov<=22500)baixo=true;
+        else if(pov<13500)dir=true;
+        else esq=true;
+    }
+    auto botao=[&](int i){return (g.rgbButtons[i]&0x80)!=0;};
+    EntradaControle e=montarEntrada(cima,baixo,esq,dir,int(g.lX),int(g.lY),350,botao(0),botao(1),botao(2),botao(3),
+                                    botao(4)||botao(5),botao(9),botao(8));
+    if(!e.dl && !e.dc){EntradaControle direita=direcaoDoControle(int(g.lRx),int(g.lRy),350);e.dl=direita.dl;e.dc=direita.dc;}
+    return e;
+}
+
+// Funcoes da SDL2 carregadas em tempo de execucao: sem a DLL o jogo continua
+// funcionando com XInput/DirectInput e o teclado.
+struct BibliotecaSDL {
+    HMODULE dll=nullptr; bool tentou=false, carregada=false;
+    int (*iniciar)(unsigned)=nullptr; void (*encerrar)(unsigned)=nullptr;
+    int (*setHint)(const char*,const char*)=nullptr;
+    int (*eventosControle)(int)=nullptr; int (*eventosJoystick)(int)=nullptr;
+    int (*quantidade)()=nullptr; int (*ehGameController)(int)=nullptr;
+    void* (*abrir)(int)=nullptr; void (*fechar)(void*)=nullptr; int (*conectado)(void*)=nullptr;
+    const char* (*nome)(void*)=nullptr; void (*atualizar)()=nullptr;
+    short (*eixo)(void*,int)=nullptr; unsigned char (*botao)(void*,int)=nullptr;
+    void* controle=nullptr; ULONGLONG proximaBusca=0;
+} sdl;
+template<class F> bool obterFuncaoSDL(const char* nome,F& funcao){
+    FARPROC p=GetProcAddress(sdl.dll,nome);
+    static_assert(sizeof(funcao)==sizeof(p));
+    memcpy(&funcao,&p,sizeof(funcao));
+    return funcao!=nullptr;
+}
+void carregarSDL(){
+    if(sdl.tentou)return;
+    sdl.tentou=true;
+    wstring caminho=pastaDoExecutavel()+L"\\SDL2.dll";
+    sdl.dll=LoadLibraryExW(caminho.c_str(),nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
+    if(!sdl.dll)return;
+    bool ok=obterFuncaoSDL("SDL_InitSubSystem",sdl.iniciar) && obterFuncaoSDL("SDL_QuitSubSystem",sdl.encerrar) &&
+        obterFuncaoSDL("SDL_SetHint",sdl.setHint) && obterFuncaoSDL("SDL_GameControllerEventState",sdl.eventosControle) &&
+        obterFuncaoSDL("SDL_JoystickEventState",sdl.eventosJoystick) && obterFuncaoSDL("SDL_NumJoysticks",sdl.quantidade) &&
+        obterFuncaoSDL("SDL_IsGameController",sdl.ehGameController) && obterFuncaoSDL("SDL_GameControllerOpen",sdl.abrir) &&
+        obterFuncaoSDL("SDL_GameControllerClose",sdl.fechar) && obterFuncaoSDL("SDL_GameControllerGetAttached",sdl.conectado) &&
+        obterFuncaoSDL("SDL_GameControllerName",sdl.nome) && obterFuncaoSDL("SDL_GameControllerUpdate",sdl.atualizar) &&
+        obterFuncaoSDL("SDL_GameControllerGetAxis",sdl.eixo) && obterFuncaoSDL("SDL_GameControllerGetButton",sdl.botao);
+    const unsigned SDL_INIT_GAMECONTROLLER=0x2000;
+    if(ok){
+        // O jogo nao tem janela SDL: le o controle sempre e filtra o foco aqui.
+        sdl.setHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS","1");
+        ok=sdl.iniciar(SDL_INIT_GAMECONTROLLER)==0;
+    }
+    if(!ok){FreeLibrary(sdl.dll);sdl.dll=nullptr;return;}
+    // Lemos o estado direto; sem isso a fila de eventos da SDL so cresceria.
+    sdl.eventosControle(0);sdl.eventosJoystick(0);
+    sdl.carregada=true;
+}
+bool lerControleSDL(EntradaControle& leitura){
+    if(!sdl.carregada)return false;
+    sdl.atualizar();
+    if(sdl.controle && !sdl.conectado(sdl.controle)){sdl.fechar(sdl.controle);sdl.controle=nullptr;}
+    if(!sdl.controle && GetTickCount64()>=sdl.proximaBusca){
+        sdl.proximaBusca=GetTickCount64()+500;
+        for(int i=0;i<sdl.quantidade() && !sdl.controle;++i)
+            if(sdl.ehGameController(i))sdl.controle=sdl.abrir(i);
+        if(sdl.controle){
+            const char* n=sdl.nome(sdl.controle);string utf8=n?n:"Controle";
+            int tamanho=MultiByteToWideChar(CP_UTF8,0,utf8.c_str(),-1,nullptr,0);
+            nomeControle.assign(max(1,tamanho),L'\0');
+            MultiByteToWideChar(CP_UTF8,0,utf8.c_str(),-1,&nomeControle[0],tamanho);
+            nomeControle.resize(wcslen(nomeControle.c_str()));
+        }
+    }
+    if(!sdl.controle)return false;
+    auto b=[](int i){return sdl.botao(sdl.controle,i)!=0;};
+    // Indices SDL_GameControllerButton/Axis: A0 B1 X2 Y3 BACK4 START6 L9 R10 cima11 baixo12 esq13 dir14.
+    leitura=montarEntrada(b(11),b(12),b(13),b(14),sdl.eixo(sdl.controle,0),sdl.eixo(sdl.controle,1),12000,
+                          b(0),b(1),b(2),b(3),b(9)||b(10),b(6),b(4));
+    return true;
+}
+bool controleNoJogador(int jogadorNumero){
+    if(!controleConectado || modo!=MANUAL)return false;
+    if(jogadorNumero==1)return dispositivoP1==JOYSTICK;
+    return doisJogadores && dispositivoP2==JOYSTICK;
+}
+// P2 controlado por joystick (usado nas legendas e no teclado).
+bool controleAtivo(){return controleNoJogador(2);}
+LONG normalizarEixoControle(LONG valor,const FaixaEixo& faixa){
+    if(!faixa.disponivel || faixa.maximo<=faixa.minimo)return 0;
+    long long escala=(static_cast<long long>(valor)-faixa.minimo)*2000/(faixa.maximo-faixa.minimo)-1000;
+    return static_cast<LONG>(clamp(escala,-1000LL,1000LL));
+}
+void normalizarEstadoControle(DIJOYSTATE2& estado){
+    LONG* eixos[]={&estado.lX,&estado.lY,&estado.lRx,&estado.lRy};
+    for(int i=0;i<4;++i)*eixos[i]=normalizarEixoControle(*eixos[i],faixasControle[i]);
+}
+void carregarXInput(){
+    if(tentouCarregarXInput)return;
+    tentouCarregarXInput=true;
+    for(const wchar_t* dll:{L"xinput1_4.dll",L"xinput1_3.dll",L"xinput9_1_0.dll"}){
+        HMODULE lib=LoadLibraryW(dll);if(!lib)continue;
+        FARPROC procedimento=GetProcAddress(lib,"XInputGetState");
+        FuncaoXInputGetState funcao=nullptr;
+        static_assert(sizeof(funcao)==sizeof(procedimento));
+        memcpy(&funcao,&procedimento,sizeof(funcao));
+        if(funcao){bibliotecaXInput=lib;obterEstadoXInput=funcao;break;}
+        FreeLibrary(lib);
+    }
+}
+void liberarControleDireto(){if(controleDireto){controleDireto->Unacquire();controleDireto->Release();controleDireto=nullptr;}}
+BOOL CALLBACK descobrirControleGenerico(const DIDEVICEINSTANCEW* info,void* contexto){
+    // O Switch Pro (inclusive o 8BitDo em modo Switch) exige inicializacao
+    // propria do protocolo HID. O DirectInput o enumera, mas entrega sensores
+    // e contadores como eixos/botoes: movimento e bombas fantasmas. Ele e lido
+    // pela SDL2; aqui so marcamos que existe para avisar se a DLL faltar.
+    if(LOWORD(info->guidProduct.Data1)==0x057e && HIWORD(info->guidProduct.Data1)==0x2009){
+        controleSwitchSemLeitura=true;
+        return DIENUM_CONTINUE;
+    }
+    auto janela=reinterpret_cast<HWND>(contexto);IDirectInputDevice8W* dispositivo=nullptr;
+    if(FAILED(entradaDireta->CreateDevice(info->guidInstance,&dispositivo,nullptr)))return DIENUM_CONTINUE;
+    if(FAILED(dispositivo->SetDataFormat(&c_dfDIJoystick2)) ||
+       FAILED(dispositivo->SetCooperativeLevel(janela,DISCL_NONEXCLUSIVE|DISCL_BACKGROUND))){dispositivo->Release();return DIENUM_CONTINUE;}
+    const DWORD eixos[]={DWORD(DIJOFS_X),DWORD(DIJOFS_Y),DWORD(DIJOFS_RX),DWORD(DIJOFS_RY)};
+    for(int i=0;i<4;++i){
+        DWORD eixo=eixos[i];
+        DIPROPRANGE faixa{{sizeof(DIPROPRANGE),sizeof(DIPROPHEADER),eixo,DIPH_BYOFFSET},-1000,1000};
+        if(FAILED(dispositivo->SetProperty(DIPROP_RANGE,&faixa.diph))){
+            faixa.lMin=0;faixa.lMax=0;
+            if(FAILED(dispositivo->GetProperty(DIPROP_RANGE,&faixa.diph)))faixasControle[i]={0,0,false};
+            else faixasControle[i]={faixa.lMin,faixa.lMax,true};
+        }else faixasControle[i]={-1000,1000,true};
+    }
+    dispositivo->Acquire();DIJOYSTATE2 estado{};
+    HRESULT resultado=dispositivo->Poll();
+    if(SUCCEEDED(resultado))resultado=dispositivo->GetDeviceState(sizeof(estado),&estado);
+    if(FAILED(resultado)){dispositivo->Unacquire();dispositivo->Release();return DIENUM_CONTINUE;}
+    nomeControle=info->tszProductName;
+    controleDireto=dispositivo;return DIENUM_STOP;
+}
+void atualizarEstadoControle(HWND janela){
+    carregarSDL();EntradaControle leitura;OrigemControle origem=SEM_CONTROLE;
+    if(lerControleSDL(leitura)){origem=CONTROLE_SDL;liberarControleDireto();}
+    if(origem==SEM_CONTROLE){carregarXInput();
+        if(obterEstadoXInput){for(DWORD i=0;i<XUSER_MAX_COUNT;++i){XINPUT_STATE estado{};
+            if(obterEstadoXInput(i,&estado)==ERROR_SUCCESS){origem=CONTROLE_XINPUT;leitura=traduzirXInput(estado.Gamepad);nomeControle=L"Controle XInput";break;}}}
+    }
+    if(origem==SEM_CONTROLE){
+        if(!entradaDireta)DirectInput8Create(GetModuleHandleW(nullptr),DIRECTINPUT_VERSION,IID_IDirectInput8W,reinterpret_cast<void**>(&entradaDireta),nullptr);
+        if(entradaDireta && !controleDireto && GetTickCount64()>=proximaBuscaControle){
+            proximaBuscaControle=GetTickCount64()+1000;
+            controleSwitchSemLeitura=false;
+            entradaDireta->EnumDevices(DI8DEVCLASS_GAMECTRL,descobrirControleGenerico,janela,DIEDFL_ATTACHEDONLY);
+        }
+        if(controleDireto){DIJOYSTATE2 estado{};HRESULT resultado=controleDireto->Poll();
+            if(FAILED(resultado)){controleDireto->Acquire();resultado=controleDireto->Poll();}
+            if(SUCCEEDED(resultado))resultado=controleDireto->GetDeviceState(sizeof(estado),&estado);
+            if(SUCCEEDED(resultado)){normalizarEstadoControle(estado);origem=CONTROLE_GENERICO;leitura=traduzirDirectInput(estado);}
+            else liberarControleDireto();
+        }
+    }else controleSwitchSemLeitura=false;
+    // Com o jogo fora de foco (ex.: PCSX2 aberto) o controle nao age aqui.
+    if(janelaPrincipal && GetForegroundWindow()!=janelaPrincipal)leitura=EntradaControle{};
+    bool estavaConectado=controleConectado;
+    controleConectado=origem!=SEM_CONTROLE;origemControle=origem;entradaControle=leitura;
+    if(!controleConectado)nomeControle.clear();
+    // Ao conectar, botoes ja apertados nao contam como novo toque.
+    if(!controleConectado || !estavaConectado){botaoBombaControleAnterior=leitura.bomba;controleMenuAnterior=leitura;}
+}
+void encerrarControle(){liberarControleDireto();if(entradaDireta){entradaDireta->Release();entradaDireta=nullptr;}
+    if(bibliotecaXInput){FreeLibrary(bibliotecaXInput);bibliotecaXInput=nullptr;}obterEstadoXInput=nullptr;tentouCarregarXInput=false;
+    if(sdl.carregada){if(sdl.controle)sdl.fechar(sdl.controle);sdl.encerrar(0x2000);}
+    if(sdl.dll)FreeLibrary(sdl.dll);
+    sdl=BibliotecaSDL{};}
+
 // --- Persistencia em arquivo (ranking.csv ao lado do executavel) ---------
 
 string pastaDoExecutavelUtf8() {
@@ -352,24 +650,76 @@ string dataAtual() {
 }
 
 string wparaStr(const wstring& texto) {
-    string resultado;
-    resultado.reserve(texto.size());
-    for (wchar_t c : texto) resultado += static_cast<char>(c);
+    int n=WideCharToMultiByte(CP_UTF8,0,texto.data(),int(texto.size()),nullptr,0,nullptr,nullptr);
+    string resultado(n,'\0');
+    if(n)WideCharToMultiByte(CP_UTF8,0,texto.data(),int(texto.size()),resultado.data(),n,nullptr,nullptr);
+    return resultado;
+}
+wstring strParaW(const string& texto){
+    int pagina=CP_UTF8,n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,texto.data(),int(texto.size()),nullptr,0);
+    if(!n && !texto.empty()){pagina=1252;n=MultiByteToWideChar(pagina,0,texto.data(),int(texto.size()),nullptr,0);}
+    wstring resultado(n,L'\0');if(n)MultiByteToWideChar(pagina,0,texto.data(),int(texto.size()),resultado.data(),n);
     return resultado;
 }
 
 // Sobrecarga de verdade (duas assinaturas distintas, nao parametro default):
 // a versao com caminho explicito permite gravar em um arquivo alternativo
 // (por exemplo em testes), e a versao sem caminho usa o ranking padrao do jogo.
-void salvarRegistroPartida(const RegistroPontuacao& registro, const string& caminhoArquivo) {
-    ofstream arquivo(caminhoArquivo, ios::app);
-    if (!arquivo) return;
-    arquivo << registro.data << ';' << registro.jogador << ';' << registro.pontuacao << ';'
-            << registro.bombas << ';' << registro.movimentos << '\n';
+string limparNomeRanking(const string& nome){
+    string limpo;bool espaco=false;
+    for(unsigned char c:nome){if(c==' '){espaco=!limpo.empty();continue;}
+        if(c<32)continue;
+        if(espaco){limpo+=' ';espaco=false;}limpo+=char(c);}
+    return limpo;
+}
+string chaveNomeRanking(const string& nome){
+    wstring chave=strParaW(limparNomeRanking(nome)),minuscula(chave.size(),L'\0');
+    if(!chave.empty())LCMapStringEx(LOCALE_NAME_INVARIANT,LCMAP_LOWERCASE,chave.data(),int(chave.size()),minuscula.data(),int(minuscula.size()),nullptr,nullptr,0);
+    return wparaStr(minuscula);
+}
+string campoCsv(const string& campo){
+    if(campo.find_first_of(";\"\r\n")==string::npos)return campo;
+    string saida="\"";for(char c:campo){if(c=='\"')saida+='\"';saida+=c;}return saida+'\"';
+}
+bool lerCamposCsv(const string& linha,vector<string>& campos){
+    campos.clear();string campo;bool aspas=false,fechado=false;
+    for(size_t i=0;i<linha.size();++i){char c=linha[i];
+        if(aspas){if(c=='\"'){if(i+1<linha.size() && linha[i+1]=='\"'){campo+='\"';++i;}else {aspas=false;fechado=true;}}else campo+=c;}
+        else if(c==';'){campos.push_back(campo);campo.clear();fechado=false;}
+        else if(c=='\"'){if(!campo.empty() || fechado)return false;aspas=true;}
+        else if(c!='\r'){if(fechado)return false;campo+=c;}
+    }
+    if(aspas)return false;
+    campos.push_back(campo);return campos.size()==5;
+}
+bool melhorRegistro(const RegistroPontuacao& a,const RegistroPontuacao& b){
+    if(a.pontuacao!=b.pontuacao)return a.pontuacao>b.pontuacao;
+    if(a.bombas!=b.bombas)return a.bombas<b.bombas;
+    if(a.movimentos!=b.movimentos)return a.movimentos<b.movimentos;
+    return chaveNomeRanking(a.jogador)<chaveNomeRanking(b.jogador);
+}
+vector<RegistroPontuacao> lerRanking(const string& caminhoArquivo);
+bool gravarRanking(vector<RegistroPontuacao> registros,const string& caminhoArquivo){
+    sort(registros.begin(),registros.end(),melhorRegistro);
+    CopyFileA(caminhoArquivo.c_str(),(caminhoArquivo+".bak").c_str(),TRUE);
+    string temporario=caminhoArquivo+".tmp";ofstream arquivo(temporario,ios::trunc);
+    if(!arquivo)return false;
+    for(const auto& r:registros)arquivo<<campoCsv(r.data)<<';'<<campoCsv(r.jogador)<<';'<<r.pontuacao<<';'<<r.bombas<<';'<<r.movimentos<<'\n';
+    arquivo.flush();if(!arquivo)return false;arquivo.close();
+    return MoveFileExA(temporario.c_str(),caminhoArquivo.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=FALSE;
+}
+bool salvarRegistroPartida(const RegistroPontuacao& registro, const string& caminhoArquivo) {
+    RegistroPontuacao novo=registro;novo.jogador=limparNomeRanking(novo.jogador);
+    if(novo.jogador.empty())return false;
+    auto registros=lerRanking(caminhoArquivo);
+    auto existente=find_if(registros.begin(),registros.end(),[&](const RegistroPontuacao& r){return chaveNomeRanking(r.jogador)==chaveNomeRanking(novo.jogador);});
+    if(existente==registros.end())registros.push_back(novo);
+    else if(melhorRegistro(novo,*existente))*existente=novo;
+    return gravarRanking(registros,caminhoArquivo);
 }
 
-void salvarRegistroPartida(const RegistroPontuacao& registro) {
-    salvarRegistroPartida(registro, caminhoRankingUtf8());
+bool salvarRegistroPartida(const RegistroPontuacao& registro) {
+    return salvarRegistroPartida(registro, caminhoRankingUtf8());
 }
 
 // Parametro default (distinto da sobrecarga acima): caminho vazio = usar o
@@ -382,32 +732,121 @@ vector<RegistroPontuacao> lerRanking(const string& caminhoArquivo = "") {
     string linha;
     while (getline(arquivo, linha)) {
         if (linha.empty()) continue;
-        istringstream ss(linha);
-        string campo;
+        vector<string> campos;if(!lerCamposCsv(linha,campos))continue;
         RegistroPontuacao registro;
-        if (!getline(ss, registro.data, ';')) continue;
-        if (!getline(ss, registro.jogador, ';')) continue;
-        if (!getline(ss, campo, ';')) continue;
-        registro.pontuacao = atoi(campo.c_str());
-        if (!getline(ss, campo, ';')) continue;
-        registro.bombas = atoi(campo.c_str());
-        if (!getline(ss, campo, ';')) continue;
-        registro.movimentos = atoi(campo.c_str());
-        registros.push_back(registro);
+        registro.data=campos[0];registro.jogador=campos[1];
+        auto inteiroValido=[](const string& valor,int& destino){try{size_t fim;destino=stoi(valor,&fim);return fim==valor.size() && destino>=0;}catch(...){return false;}};
+        if(!inteiroValido(campos[2],registro.pontuacao) || !inteiroValido(campos[3],registro.bombas) || !inteiroValido(campos[4],registro.movimentos))continue;
+        registro.jogador=limparNomeRanking(registro.jogador);
+        if(registro.jogador.empty() || registro.pontuacao<0 || registro.bombas<0 || registro.movimentos<0)continue;
+        auto existente=find_if(registros.begin(),registros.end(),[&](const RegistroPontuacao& r){return chaveNomeRanking(r.jogador)==chaveNomeRanking(registro.jogador);});
+        if(existente==registros.end())registros.push_back(registro);
+        else if(melhorRegistro(registro,*existente))*existente=registro;
     }
     sort(registros.begin(), registros.end(),
-         [](const RegistroPontuacao& a, const RegistroPontuacao& b) { return a.pontuacao > b.pontuacao; });
+         melhorRegistro);
     return registros;
 }
+bool editarNomeRanking(const string& antigo,const string& novo,const string& caminho){
+    auto registros=lerRanking(caminho);string limpo=limparNomeRanking(novo);
+    if(limpo.empty() || strParaW(limpo).size()>24)return false;
+    auto alvo=find_if(registros.begin(),registros.end(),[&](const RegistroPontuacao& r){return chaveNomeRanking(r.jogador)==chaveNomeRanking(antigo);});
+    if(alvo==registros.end())return false;
+    for(const auto& r:registros)if(&r!=&*alvo && chaveNomeRanking(r.jogador)==chaveNomeRanking(limpo))return false;
+    alvo->jogador=limpo;return gravarRanking(registros,caminho);
+}
+bool excluirRegistroRanking(const string& nome,const string& caminho){
+    auto registros=lerRanking(caminho);size_t antes=registros.size();
+    registros.erase(remove_if(registros.begin(),registros.end(),[&](const RegistroPontuacao& r){return chaveNomeRanking(r.jogador)==chaveNomeRanking(nome);}),registros.end());
+    return registros.size()<antes && gravarRanking(registros,caminho);
+}
 
+// Na tela de nomes o campo 2 edita o nome de P2; nas demais, o de P1.
+wstring& nomeEmEdicao() { return telaMenu==MENU_NOMES && campoNome==2 ? nomeJogador2 : nomeJogador; }
+string& confirmacaoEmEdicao() { return telaMenu==MENU_NOMES && campoNome==2 ? nomeConfirmadoRanking2 : nomeConfirmadoRanking; }
 void digitarNomeJogador(wchar_t caractere) {
+    if(!editandoNome)return;
+    wstring& nome=nomeEmEdicao();
+    cursorNome=min(cursorNome,nome.size());
     if (caractere == L'\b') {
-        if (!nomeJogador.empty()) nomeJogador.pop_back();
+        if(selecionarNome){nome.clear();cursorNome=0;selecionarNome=false;}
+        else if(cursorNome>0){nome.erase(--cursorNome,1);}
         return;
     }
-    bool valido = (caractere >= L'A' && caractere <= L'Z') || (caractere >= L'a' && caractere <= L'z') ||
-                  (caractere >= L'0' && caractere <= L'9') || caractere == L' ';
-    if (valido && nomeJogador.size() < 16) nomeJogador += caractere;
+    bool valido=caractere>=L' ' && caractere!=127;
+    if(valido){
+        if(selecionarNome){nome.clear();cursorNome=0;selecionarNome=false;}
+        if(nome.size()<24){nome.insert(cursorNome,1,caractere);cursorNome++;avisoNome.clear();confirmacaoEmEdicao().clear();}
+    }
+}
+bool confirmarNomeJogador(bool verificarExistente=false){
+    wstring& nome=nomeEmEdicao();
+    string limpo=limparNomeRanking(wparaStr(nome));
+    if(limpo.empty()){avisoNome=L"Digite o nome antes de jogar.";editandoNome=true;cursorNome=0;return false;}
+    nome=strParaW(limpo);cursorNome=nome.size();
+    string chave=chaveNomeRanking(limpo);
+    if(telaMenu==MENU_NOMES && campoNome==2 && chave==chaveNomeRanking(wparaStr(nomeJogador))){
+        avisoNome=L"Os dois jogadores precisam de nomes diferentes.";editandoNome=true;selecionarNome=true;return false;
+    }
+    if(verificarExistente && confirmacaoEmEdicao()!=chave){
+        for(const auto& r:lerRanking())if(chaveNomeRanking(r.jogador)==chave){
+            wstring mensagem=L"O nome "+strParaW(r.jogador)+L" ja existe no ranking.\nPontuacao: "+to_wstring(r.pontuacao)+L" pontos.\n\nDeseja continuar com esse nome? Seu melhor resultado sera mantido e atualizado se voce supera-lo.";
+            if(!janelaPrincipal || MessageBoxW(janelaPrincipal,mensagem.c_str(),L"Nome existente",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)!=IDYES){avisoNome=L"Escolha outro nome ou gerencie o ranking.";editandoNome=true;selecionarNome=true;return false;}
+            break;
+        }
+        confirmacaoEmEdicao()=chave;
+    }
+    editandoNome=false;selecionarNome=false;avisoNome.clear();return true;
+}
+// Nomes confirmados para a partida manual (dois e diferentes quando jogam dois).
+bool nomesProntos(){
+    auto pronto=[](const wstring& nome,const string& confirmado){
+        string limpo=limparNomeRanking(wparaStr(nome));
+        return !limpo.empty() && chaveNomeRanking(limpo)==confirmado;
+    };
+    if(!pronto(nomeJogador,nomeConfirmadoRanking))return false;
+    return !doisJogadores || (pronto(nomeJogador2,nomeConfirmadoRanking2) && nomeConfirmadoRanking2!=nomeConfirmadoRanking);
+}
+void editarCampoNome(int campo){
+    campoNome=doisJogadores?campo:1;editandoNome=true;
+    selecionarNome=!nomeEmEdicao().empty();cursorNome=nomeEmEdicao().size();
+}
+void abrirTelaNomes(TelaMenu depois){
+    telaAposNomes=depois;telaMenu=MENU_NOMES;avisoNome.clear();editarCampoNome(1);
+}
+void abrirAtribuicaoControles();
+// Enter na tela de nomes: confirma o campo atual e segue para o proximo.
+void confirmarCampoNome(){
+    if(!confirmarNomeJogador(true))return;
+    if(campoNome==1 && doisJogadores){editarCampoNome(2);return;}
+    campoNome=1;
+    if(!nomesProntos()){editarCampoNome(1);return;}
+    if(telaAposNomes==MENU_ATRIBUICAO_CONTROLES)abrirAtribuicaoControles();
+    else telaMenu=telaAposNomes;
+}
+void iniciarRenomeacaoRanking(){
+    auto registros=lerRanking();if(registros.empty())return;
+    rankingSelecionado=clamp(rankingSelecionado,0,int(registros.size())-1);
+    nomeOriginalRanking=registros[rankingSelecionado].jogador;nomeAntesEdicaoRanking=nomeJogador;
+    nomeJogador=strParaW(nomeOriginalRanking);editandoNome=true;selecionarNome=true;cursorNome=nomeJogador.size();avisoRanking.clear();
+}
+void terminarRenomeacaoRanking(bool confirmar){
+    if(confirmar && !editarNomeRanking(nomeOriginalRanking,wparaStr(nomeJogador),caminhoRankingUtf8())){
+        avisoRanking=L"Nome vazio, repetido ou arquivo sem permissao. Escolha outro nome.";return;
+    }
+    if(!confirmar || chaveNomeRanking(wparaStr(nomeAntesEdicaoRanking))!=chaveNomeRanking(nomeOriginalRanking))nomeJogador=nomeAntesEdicaoRanking;
+    else nomeJogador=strParaW(limparNomeRanking(wparaStr(nomeJogador)));
+    editandoNome=false;selecionarNome=false;nomeOriginalRanking.clear();nomeConfirmadoRanking.clear();
+    avisoRanking=confirmar?L"Nome atualizado. Pontuacao preservada.":L"Edicao cancelada.";
+}
+void pedirExclusaoRanking(){
+    auto registros=lerRanking();if(registros.empty() || !janelaPrincipal)return;
+    rankingSelecionado=clamp(rankingSelecionado,0,int(registros.size())-1);auto r=registros[rankingSelecionado];
+    wstring texto=L"Excluir "+strParaW(r.jogador)+L" do ranking?\n\nA pontuacao de "+to_wstring(r.pontuacao)+L" pontos sera perdida. Voce podera jogar novamente com esse nome, comecando do zero.";
+    if(MessageBoxW(janelaPrincipal,texto.c_str(),L"Excluir registro",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)!=IDYES)return;
+    bool ok=excluirRegistroRanking(r.jogador,caminhoRankingUtf8());
+    avisoRanking=ok?L"Registro excluido. Esse nome pode recomecar do zero.":L"Nao foi possivel excluir o registro.";
+    if(ok)nomeConfirmadoRanking.clear();
 }
 
 bool iguais(Posicao a, Posicao b) {
@@ -450,7 +889,11 @@ bool livre(int linha, int coluna) {
 
 // Unico ponto que altera "pontos": aplica o delta e nunca deixa a pontuacao
 // ficar negativa (regra explicada na tela "Pontuacao" do menu).
-void ajustarPontos(int delta) { pontos = max(0, pontos + delta); }
+// "dono" credita tambem a parte individual (0 = P1, 1 = P2); -1 so o total.
+void ajustarPontos(int delta, int dono = -1) {
+    pontos = max(0, pontos + delta);
+    if (dono == 0 || dono == 1) pontosJogador[dono] = max(0, pontosJogador[dono] + delta);
+}
 
 bool temInimigo(Posicao p, int ignorar = -1) {
     for (int i = 0; i < static_cast<int>(inimigos.size()); i++) {
@@ -468,6 +911,78 @@ bool naExplosao(Posicao p) {
 }
 
 bool segundoJogadorAtivo() { return doisJogadores && modo == MANUAL; }
+// Jogador presente na arena agora (P2 so existe no manual com dois).
+bool jogadorEmCampo(int numero) {
+    return numero == 1 ? !jogadorCaido[0] : segundoJogadorAtivo() && !jogadorCaido[1];
+}
+// Com um jogador, ser atingido encerra a tentativa (e custa uma vida). Com
+// dois, cada um perde uma das suas 3 vidas e renasce; quem zera fica fora
+// ate a proxima fase. Os dois sem vidas = fim de jogo.
+void derrubarJogador(int numero);
+// Quais teclas de movimento pertencem a cada jogador. O joystick escolhido
+// tira o teclado do seu dono; se ele desconectar, o teclado volta a valer.
+enum { TECLAS_WASD = 1, TECLAS_SETAS = 2 };
+int teclaDoJogador(bool p2) {
+    bool p1Teclado = !controleNoJogador(1);
+    bool p2Teclado = segundoJogadorAtivo() && !controleNoJogador(2);
+    if (!p2) return !p1Teclado ? 0 : p2Teclado ? TECLAS_WASD : TECLAS_WASD|TECLAS_SETAS;
+    return !p2Teclado ? 0 : p1Teclado ? TECLAS_SETAS : TECLAS_WASD|TECLAS_SETAS;
+}
+bool joystickDoJogador(int numero) {
+    return controleConectado && (numero == 1 ? dispositivoP1 == JOYSTICK : doisJogadores && dispositivoP2 == JOYSTICK);
+}
+// Mesma divisao de teclaDoJogador, mas valida tambem no menu (antes da partida).
+wstring teclasDoJogador(int numero) {
+    if (joystickDoJogador(numero)) return L"JOYSTICK (A/B bomba)";
+    bool outroNoTeclado = doisJogadores && !joystickDoJogador(3 - numero);
+    if (!outroNoTeclado) return L"WASD/SETAS + ESPACO/ENTER";
+    return numero == 1 ? L"WASD + ESPACO" : L"SETAS + ENTER";
+}
+wstring resumoJogadores() {
+    wstring texto = doisJogadores ? L"2 JOGADORES  /  P1 " : L"1 JOGADOR  /  P1 ";
+    texto += teclasDoJogador(1);
+    if (doisJogadores) texto += L"  +  P2 " + teclasDoJogador(2);
+    return texto;
+}
+// Na partida, os itens (chute, teleporte, detonar) agem sobre P1; se P1 esta
+// no joystick, as instrucoes mostram os botoes dele.
+bool itensNoJoystick() { return modo == MANUAL && joystickDoJogador(1); }
+bool somenteJoystick() { return itensNoJoystick() && !doisJogadores; }
+bool algumJoystickNaPartida() { return modo == MANUAL && (joystickDoJogador(1) || joystickDoJogador(2)); }
+wstring situacaoControle() {
+    if (controleConectado) return L"Joystick conectado: " + nomeControle;
+    if (controleSwitchSemLeitura) return L"Pro Controller visto, mas falta SDL2.dll ao lado do jogo.";
+    return sdl.carregada ? L"Nenhum joystick conectado. Conecte e ele aparece aqui."
+                         : L"Nenhum joystick (SDL2.dll ausente: so controles XInput/DirectInput).";
+}
+
+// Tela de atribuicao no estilo "escolher lados": cada dispositivo fica sob
+// P1, ao centro (sem uso) ou sob P2. -1 = P1, 0 = sem uso, 1 = P2.
+int ladoDispositivo(Dispositivo d) {
+    if (dispositivoP1 == d) return -1;
+    if (doisJogadores && dispositivoP2 == d) return 1;
+    return 0;
+}
+// Sem joystick nao ha o que mover: o teclado atende P1 (e P2, dividido).
+void moverDispositivo(Dispositivo d, int sentido) {
+    if (!controleConectado) { dispositivoP1 = dispositivoP2 = TECLADO; return; }
+    Dispositivo outro = d == TECLADO ? JOYSTICK : TECLADO;
+    if (!doisJogadores) dispositivoP1 = sentido < 0 ? d : outro;
+    else if (sentido < 0) { dispositivoP1 = d; dispositivoP2 = outro; }
+    else { dispositivoP1 = outro; dispositivoP2 = d; }
+}
+// Opcao 0: P1 no teclado (e P2 no joystick). Opcao 1: P1 no joystick.
+void escolherOpcaoControles(int opcao) { moverDispositivo(TECLADO, opcao == 0 ? -1 : 1); }
+void validarAtribuicao() {
+    if (!controleConectado) { dispositivoP1 = dispositivoP2 = TECLADO; return; }
+    if (doisJogadores && dispositivoP1 == dispositivoP2) dispositivoP2 = dispositivoP1 == TECLADO ? JOYSTICK : TECLADO;
+}
+void abrirAtribuicaoControles() { validarAtribuicao(); telaMenu = MENU_ATRIBUICAO_CONTROLES; }
+
+Gdiplus::Image* imagemInimigoAtual(){
+    bool vermelhoEmUso=personagemP1==3 || (segundoJogadorAtivo() && personagemP2==3);
+    return vermelhoEmUso?spriteInimigoVerde.get():spriteInimigoDirecional.get();
+}
 
 // Caixa corporal central de meia celula, independente da escala da janela.
 // Espaco vazio do recorte, sombra e capacete nao aumentam o alcance do contato.
@@ -489,30 +1004,66 @@ bool corpoNaExplosao(float l, float c) {
     return false;
 }
 
+// Dono da primeira chama que fere o corpo (filtrada por "fere"); -1 = nenhuma.
+template <typename Fere>
+int donoDaChama(float l, float c, Fere fere) {
+    for (const Bomba& b : bombas)
+        if (b.explodindo && fere(b))
+            for (Posicao p : b.celulasExplosao) if (corpoNaCelula(l,c,p)) return b.dono;
+    return -1;
+}
+// Bomba de inimigo fere sempre; a propria, salvo com escudo; a do outro
+// jogador so no modo inimigos (no modo amigos ela nao fere o parceiro).
+bool bombaFereJogador(const Bomba& b, int numero) {
+    if (b.dono == DONO_INIMIGO) return true;
+    if (b.dono == numero-1) return !imuneAPropriaBomba;
+    return modoRivais;
+}
+bool bombaFereInimigo(const Bomba& b) { return b.dono != DONO_INIMIGO; }
+int donoDaChamaNoJogador(float l, float c, int numero) {
+    return donoDaChama(l, c, [numero](const Bomba& b) { return bombaFereJogador(b, numero); });
+}
+
 // Corpo de 3x2 casas, medido na posicao atual como no estudo.
 bool celulaBoss(int l, int c) {
-    return boss.vivo && c+1>boss.visualC+.001f && c<boss.visualC+3-.001f &&
+    return boss.vivo && !hornetNoAr() && c+1>boss.visualC+.001f && c<boss.visualC+larguraBoss()-.001f &&
            l+1>boss.visualL+.001f && l<boss.visualL+2-.001f;
 }
 bool bloqueadoBoss(Posicao p) {
+    if(hornetNoAr())return false;
     if (celulaBoss(p.linha,p.coluna)) return true;
     if (boss.investindo) return false; // Investida reserva so o corpo atual: permite esquiva.
     return boss.vivo && boss.movendo &&
         p.coluna>=min(boss.posicao.coluna,boss.destino.coluna) &&
-        p.coluna<max(boss.posicao.coluna,boss.destino.coluna)+3 &&
+        p.coluna<max(boss.posicao.coluna,boss.destino.coluna)+larguraBoss() &&
         p.linha>=min(boss.posicao.linha,boss.destino.linha) &&
         p.linha<max(boss.posicao.linha,boss.destino.linha)+2;
 }
 bool contatoComInimigo(float l, float c) {
     for (const Inimigo& inimigo : inimigos)
         if (inimigo.vivo && personagensEmContato(l,c,inimigo.visualL,inimigo.visualC)) return true;
-    return boss.vivo && c+.75f>boss.visualC && c+.25f<boss.visualC+3 &&
+    return boss.vivo && !hornetNoAr() && c+.75f>boss.visualC && c+.25f<boss.visualC+larguraBoss() &&
            l+.75f>boss.visualL && l+.25f<boss.visualL+2;
 }
 
+void derrubarJogador(int numero) {
+    if (numero < 1 || numero > 2 || !jogadorEmCampo(numero)) return;
+    if (!segundoJogadorAtivo()) { jogadoresAtingidos |= numero; estado = DERROTA; return; }
+    int i = numero-1;
+    if (imunidadeJogadorMs[i] > 0) return; // acabou de renascer
+    jogadoresAtingidos |= numero;
+    jogadorCaido[i] = true;
+    tempoQuedaMs[i] = 0;
+    vidasJogador[i] = max(0, vidasJogador[i]-1);
+    // Bombas-relogio de quem caiu viram bombas comuns, senao ficariam no mapa.
+    for (Bomba& b : bombas)
+        if (b.dono == i && b.relogio && !b.explodindo) { b.relogio = false; b.tempoMs = TEMPO_BOMBA_MS; }
+    if (vidasJogador[0] == 0 && vidasJogador[1] == 0) { estado = FIM_DE_JOGO; vidas = 0; }
+}
+
 void verificarContatoJogadores() {
-    if (contatoComInimigo(jogadorVisualL,jogadorVisualC)) { estado=DERROTA; jogadoresAtingidos|=1; }
-    if (segundoJogadorAtivo() && contatoComInimigo(jogador2VisualL,jogador2VisualC)) { estado=DERROTA; jogadoresAtingidos|=2; }
+    if (jogadorEmCampo(1) && contatoComInimigo(jogadorVisualL,jogadorVisualC)) derrubarJogador(1);
+    if (jogadorEmCampo(2) && contatoComInimigo(jogador2VisualL,jogador2VisualC)) derrubarJogador(2);
 }
 
 // Celula ocupada por alguma bomba ativa (qualquer uma, agora que podem
@@ -522,7 +1073,14 @@ bool bombaEm(Posicao p) {
     return false;
 }
 
+// Limite por jogador: a bomba de um nao ocupa a vaga do outro.
 int limiteBombas() { return 1 + bombasExtras; }
+int bombasDoDono(int dono) {
+    int total = 0;
+    for (const Bomba& b : bombas) if (b.ativa && b.dono == dono) total++;
+    return total;
+}
+int alcanceDaBomba(const Bomba& b) { return b.dono == DONO_INIMIGO ? ALCANCE_BOMBA_INIMIGO : alcanceExplosao; }
 
 void limparArea(int linha, int coluna) {
     mapa[linha][coluna] = VAZIO;
@@ -618,9 +1176,9 @@ void iniciarBoss() {
     boss.posicao = {1,6};
     // Evita aparecer sobre um jogador que esteja no alto da arena.
     bool localEncontrado=false;
-    for (int l=1;l<LINHAS-2 && !localEncontrado;++l) for (int c=1;c<COLUNAS-3;++c) {
-        auto sobrepoe=[&](float jl,float jc){return jc+.85f>c && jc+.15f<c+3 && jl+.85f>l && jl+.15f<l+2;};
-        bool segredo=marioAliado.escondido && marioAliado.bloco.coluna>=c && marioAliado.bloco.coluna<c+3 && marioAliado.bloco.linha>=l && marioAliado.bloco.linha<l+2;
+    for (int l=1;l<LINHAS-2 && !localEncontrado;++l) for (int c=1;c<COLUNAS-larguraBoss();++c) {
+        auto sobrepoe=[&](float jl,float jc){return jc+.85f>c && jc+.15f<c+larguraBoss() && jl+.85f>l && jl+.15f<l+2;};
+        bool segredo=marioAliado.escondido && marioAliado.bloco.coluna>=c && marioAliado.bloco.coluna<c+larguraBoss() && marioAliado.bloco.linha>=l && marioAliado.bloco.linha<l+2;
         if (!segredo && (!marioAliado.ativo || marioAliado.hp<=0 || !sobrepoe(marioAliado.l,marioAliado.c)) && !sobrepoe(jogadorVisualL,jogadorVisualC) &&
             (!segundoJogadorAtivo() || !sobrepoe(jogador2VisualL,jogador2VisualC))) {boss.posicao={l,c};localEncontrado=true;break;}
     }
@@ -628,7 +1186,7 @@ void iniciarBoss() {
     boss.visualL = static_cast<float>(boss.posicao.linha);
     boss.visualC = static_cast<float>(boss.posicao.coluna);
     for(int l=boss.posicao.linha;l<boss.posicao.linha+2;++l)
-        for(int c=boss.posicao.coluna;c<boss.posicao.coluna+3;++c) mapa[l][c]=VAZIO;
+        for(int c=boss.posicao.coluna;c<boss.posicao.coluna+larguraBoss();++c) mapa[l][c]=VAZIO;
     boss.tempoProximoMovimentoMs = INTERVALO_MOVIMENTO_BOSS_MS;
     boss.tempoProximoAtaqueMs = 5000;
     perigoBoss.clear(); fogosBoss.clear(); areasBoss.clear(); projeteisBoss.clear(); impactosBoss.clear();
@@ -641,7 +1199,13 @@ void iniciarBoss() {
 void montarFase() {
     tempoFimMs = 0;
     jogadoresAtingidos = 0;
+    jogadorCaido[0] = jogadorCaido[1] = false;
+    tempoQuedaMs[0] = tempoQuedaMs[1] = 0;
+    vidasJogador[0] = vidasJogador[1] = VIDAS_POR_JOGADOR;
+    imunidadeJogadorMs[0] = imunidadeJogadorMs[1] = 0;
     fill(begin(teclaPressionada),end(teclaPressionada),false);
+    // O A que reiniciou a fase ainda esta apertado: nao vira bomba ao nascer.
+    botaoBombaControleAnterior = entradaControle.bomba;
     distanciaAnimacaoJogador = distanciaAnimacaoJogador2 = 0;
     quadroAnimJogador = quadroAnimJogador2 = 1;
     criarMapa();
@@ -658,7 +1222,7 @@ void montarFase() {
     int totalNormais = quantidadeInimigosNormais();
     for (int i = 1; i <= totalNormais && i < static_cast<int>(spawns.size()); i++)
         inimigos.push_back({spawns[i], true, sorteioIntervalo(gerador)});
-    if (faseAtual == TOTAL_FASES) {
+    if (faseAtual == 8 || faseAtual == TOTAL_FASES) {
         Posicao posEspecial = posicaoLivreAleatoria();
         limparArea(posEspecial.linha, posEspecial.coluna);
         Inimigo especial{posEspecial, true, sorteioIntervalo(gerador)};
@@ -669,6 +1233,19 @@ void montarFase() {
         inimigo.visualL = static_cast<float>(inimigo.posicao.linha);
         inimigo.visualC = static_cast<float>(inimigo.posicao.coluna);
         if (dificuldade == FACIL) inimigo.tempoProximoMovimentoMs += 900;
+    }
+    // Facil: um inimigo solta bomba; Medio: metade; Dificil: 75%.
+    int percentual = dificuldade == MEDIO ? 50 : 75;
+    int comBomba = dificuldade == FACIL ? min(1, static_cast<int>(inimigos.size()))
+                 : (static_cast<int>(inimigos.size()) * percentual + 50) / 100;
+    vector<int> ordemInimigos(inimigos.size());
+    for (size_t i = 0; i < ordemInimigos.size(); i++) ordemInimigos[i] = static_cast<int>(i);
+    shuffle(ordemInimigos.begin(), ordemInimigos.end(), gerador);
+    uniform_int_distribution<int> primeiraBomba(RECARGA_BOMBA_INIMIGO_MIN_MS, RECARGA_BOMBA_INIMIGO_MAX_MS);
+    for (int i = 0; i < comBomba; i++) {
+        Inimigo& inimigo = inimigos[ordemInimigos[i]];
+        inimigo.soltaBomba = true;
+        inimigo.recargaBombaMs = primeiraBomba(gerador);
     }
     itensNoChao.clear();
     possuiCartaChute = false;
@@ -725,6 +1302,7 @@ void reiniciarFase() {
 void avancarFase() {
     if (faseAtual < TOTAL_FASES) faseAtual++;
     vidas = VIDAS_BASE;
+    estatisticas.movimentosFase = estatisticas.bombasFase = 0;
     montarFase();
 }
 
@@ -732,18 +1310,22 @@ void avancarFase() {
 // fase, pontos, estatisticas e vidas - so essa funcao faz isso.
 void novaPartida(ModoJogo novoModo, Dificuldade novaDificuldade) {
     modo = novoModo;
+    if(novoModo==AUTOMATICO)doisJogadores=false;
     dificuldade = novaDificuldade;
     telaMenu = MENU_PRINCIPAL;
     faseAtual = faseSelecionada;
     pontos = 0;
+    pontosJogador[0] = pontosJogador[1] = 0;
     vidas = VIDAS_BASE;
     estatisticas = EstatisticasPartida{};
     registroSalvo = false;
+    erroSalvarRanking = false;
+    botaoBombaControleAnterior=entradaControle.bomba;
     tempoPartidaMs = 0;
     montarFase();
 }
 
-void coletarItensEm(Posicao pos) {
+void coletarItensEm(Posicao pos, int dono = 0) {
     for (size_t i = 0; i < itensNoChao.size(); i++) {
         if (!iguais(itensNoChao[i].posicao, pos)) continue;
         switch (itensNoChao[i].tipo) {
@@ -758,7 +1340,7 @@ void coletarItensEm(Posicao pos) {
         }
         itensNoChao.erase(itensNoChao.begin() + i);
         estatisticas.itensColetados++;
-        ajustarPontos(PONTOS_POR_ITEM);
+        ajustarPontos(PONTOS_POR_ITEM, dono);
         return;
     }
 }
@@ -774,20 +1356,20 @@ bool podeAndarPara(Posicao destino) {
             mapa[destino.linha][destino.coluna] == PAREDE_FRAGIL);
 }
 
-void atingirSePerigoso(float l, float c) {
-    if (contatoComInimigo(l,c) || (corpoNaExplosao(l,c) && !imuneAPropriaBomba)) estado = DERROTA;
+void atingirSePerigoso(float l, float c, int numero = 1) {
+    if (jogadorEmCampo(numero) && (contatoComInimigo(l,c) || donoDaChamaNoJogador(l,c,numero) >= 0)) derrubarJogador(numero);
 }
 
-void avancarOuVencerSePortal(Posicao pos) {
+void avancarOuVencerSePortal(Posicao pos, int dono = 0) {
     if (estado == JOGANDO && mapa[pos.linha][pos.coluna] == PORTAL) {
-        ajustarPontos(PONTOS_POR_FASE);
+        ajustarPontos(max(0,PONTOS_POR_FASE-estatisticas.movimentosFase*CUSTO_POR_MOVIMENTO-estatisticas.bombasFase*CUSTO_POR_BOMBA), dono);
         if (faseAtual < TOTAL_FASES) avancarFase();
         else estado = VITORIA;
     }
 }
 
 void moverJogador(int dl, int dc) {
-    if (estado != JOGANDO || tempoMovimentoMs > 0 ||
+    if (estado != JOGANDO || jogadorCaido[0] || tempoMovimentoMs > 0 ||
         !visualNoDestino(jogadorVisualL, jogadorVisualC, jogador)) return;
     direcaoJogador = {dl, dc};
     Posicao origem = jogador;
@@ -795,10 +1377,11 @@ void moverJogador(int dl, int dc) {
     if (podeAndarPara(destino)) jogador = destino;
     if (!iguais(origem, jogador)) {
         estatisticas.movimentos++;
-        ajustarPontos(-CUSTO_POR_MOVIMENTO);
+        estatisticas.movimentosFase++;
+        estatisticas.movimentosJogador[0]++;
         quadroAnimJogador = (quadroAnimJogador + 1) % QUADROS_POR_DIRECAO;
     }
-    atingirSePerigoso(jogadorVisualL,jogadorVisualC);
+    atingirSePerigoso(jogadorVisualL,jogadorVisualC,1);
     tempoMovimentoMs = iguais(origem,jogador) ? 0 : INTERVALO_MOVIMENTO_MS;
 }
 
@@ -807,7 +1390,7 @@ void moverJogador(int dl, int dc) {
 // os mesmos do time (atingirSePerigoso/coletarItensEm/avancarOuVencerSePortal
 // ja sao genericos o bastante pra servir aos dois).
 void moverJogador2(int dl, int dc) {
-    if (estado != JOGANDO || tempoMovimentoMs2 > 0 ||
+    if (estado != JOGANDO || jogadorCaido[1] || tempoMovimentoMs2 > 0 ||
         !visualNoDestino(jogador2VisualL, jogador2VisualC, jogador2)) return;
     direcaoJogador2 = {dl, dc};
     Posicao origem = jogador2;
@@ -815,39 +1398,46 @@ void moverJogador2(int dl, int dc) {
     if (podeAndarPara(destino)) jogador2 = destino;
     if (!iguais(origem, jogador2)) {
         estatisticas.movimentos++;
-        ajustarPontos(-CUSTO_POR_MOVIMENTO);
+        estatisticas.movimentosFase++;
+        estatisticas.movimentosJogador[1]++;
         quadroAnimJogador2 = (quadroAnimJogador2 + 1) % QUADROS_POR_DIRECAO;
     }
-    atingirSePerigoso(jogador2VisualL,jogador2VisualC);
+    atingirSePerigoso(jogador2VisualL,jogador2VisualC,2);
     tempoMovimentoMs2 = iguais(origem,jogador2) ? 0 : INTERVALO_MOVIMENTO_MS;
 }
 
 void iniciarExplosaoBomba(Bomba& b);
 
-void colocarBombaEm(Posicao pos) {
-    if (estado != JOGANDO || static_cast<int>(bombas.size()) >= limiteBombas()) return;
+void colocarBombaEm(Posicao pos, int dono = 0) {
+    if (estado != JOGANDO || bombasDoDono(dono) >= limiteBombas() || bombaEm(pos)) return;
+    if ((dono == 0 || dono == 1) && jogadorCaido[dono]) return;
     Bomba nova;
     nova.posicao = pos;
     nova.ativa = true;
     nova.tempoMs = TEMPO_BOMBA_MS;
-    nova.relogio = temBombaRelogio;
+    // So P1 tem tecla de detonar; no modo inimigos a bomba de P2 nao seria
+    // detonada pelo dono, entao ela volta a ser uma bomba comum.
+    nova.relogio = temBombaRelogio && (dono == 0 || !modoRivais);
+    nova.dono = dono;
     bombas.push_back(nova);
     estatisticas.bombasUsadas++;
-    ajustarPontos(-CUSTO_POR_BOMBA);
+    estatisticas.bombasFase++;
+    estatisticas.bombasJogador[dono]++;
 }
 
-void colocarBomba() { colocarBombaEm(jogador); }
-void colocarBomba2() { colocarBombaEm(jogador2); }
+void colocarBomba() { colocarBombaEm(jogador, 0); }
+void colocarBomba2() { colocarBombaEm(jogador2, 1); }
 
 // Bomba-relogio (item): nao explode sozinha, so quando o jogador aperta a
 // tecla de detonar - todas as bombas-relogio ativas do jogador explodem
 // juntas, como no Bomberman classico.
 void detonarBombasRelogio() {
-    for (Bomba& b : bombas) if (b.ativa && !b.explodindo && b.relogio) iniciarExplosaoBomba(b);
+    for (Bomba& b : bombas)
+        if (b.ativa && !b.explodindo && b.relogio && (b.dono == 0 || !modoRivais)) iniciarExplosaoBomba(b);
 }
 
 void chutarBomba() {
-    if (estado != JOGANDO || !possuiCartaChute) return;
+    if (estado != JOGANDO || jogadorCaido[0] || !possuiCartaChute) return;
     Posicao esperado{jogador.linha + direcaoJogador.linha, jogador.coluna + direcaoJogador.coluna};
     for (Bomba& b : bombas) {
         if (!b.ativa || b.explodindo || !iguais(b.posicao, esperado)) continue;
@@ -865,7 +1455,7 @@ void chutarBomba() {
 }
 
 void teletransportarJogador() {
-    if (estado != JOGANDO || !possuiCartaTeleporte) return;
+    if (estado != JOGANDO || jogadorCaido[0] || !possuiCartaTeleporte) return;
     vector<Posicao> livres;
     for (int l = 1; l < LINHAS - 1; l++)
         for (int c = 1; c < COLUNAS - 1; c++)
@@ -879,7 +1469,7 @@ void teletransportarJogador() {
     // hora, nao deslizar visivelmente atravessando o mapa inteiro.
     jogadorVisualL = static_cast<float>(jogador.linha);
     jogadorVisualC = static_cast<float>(jogador.coluna);
-    atingirSePerigoso(jogadorVisualL,jogadorVisualC);
+    atingirSePerigoso(jogadorVisualL,jogadorVisualC,1);
     coletarItens();
     possuiCartaTeleporte = false;
 }
@@ -901,13 +1491,15 @@ void destruirBlocoBonus(int linha, int coluna) {
 // permitir" - ao contrario da versao antiga (que sempre parava no primeiro
 // bloco fragil), aqui o mesmo alcanceExplosao tambem conta quantos blocos
 // frageis em sequencia a chama consegue atravessar/destruir.
-void libertarMario(Posicao p) {
+void libertarMario(Posicao p, int dono = 0) {
     if(!marioAliado.escondido || !iguais(p,marioAliado.bloco))return;
     marioAliado.escondido=false;marioAliado.ativo=true;marioAliado.hp=3;
+    // No modo inimigos ele fica do lado de quem o libertou primeiro.
+    marioAliado.dono=modoRivais && segundoJogadorAtivo() && (dono==0 || dono==1) ? dono : -1;
     marioAliado.posicao=p;marioAliado.l=float(p.linha);marioAliado.c=float(p.coluna);
     marioAliado.imunidade=2.f; // A bomba que liberta nao machuca o aliado.
 }
-void propagarExplosao(vector<Posicao>& celulas, int dl, int dc, Posicao posAtual, int alcanceRestante) {
+void propagarExplosao(vector<Posicao>& celulas, int dl, int dc, Posicao posAtual, int alcanceRestante, int dono = 0) {
     if (alcanceRestante <= 0) return;
     Posicao proxima{posAtual.linha + dl, posAtual.coluna + dc};
     if (!dentro(proxima.linha, proxima.coluna) || mapa[proxima.linha][proxima.coluna] == PAREDE_SOLIDA) return;
@@ -915,34 +1507,43 @@ void propagarExplosao(vector<Posicao>& celulas, int dl, int dc, Posicao posAtual
     if (mapa[proxima.linha][proxima.coluna] == PAREDE_FRAGIL) {
         mapa[proxima.linha][proxima.coluna] = VAZIO;
         bool libertando=marioAliado.escondido && iguais(proxima,marioAliado.bloco);
-        libertarMario(proxima);
+        libertarMario(proxima, dono);
         if(marioAliado.ativo && !libertando && gerador()%3==0)macasNoChao.push_back(proxima);
         invalidarCacheMapa();
-        estatisticas.caixasDestruidas++;
-        ajustarPontos(PONTOS_POR_CAIXA);
+        // Caixa quebrada por bomba de inimigo nao rende pontos a ninguem.
+        if (dono != DONO_INIMIGO) { estatisticas.caixasDestruidas++; ajustarPontos(PONTOS_POR_CAIXA, dono); }
     } else if (mapa[proxima.linha][proxima.coluna] == PAREDE_BONUS) {
         mapa[proxima.linha][proxima.coluna] = VAZIO;
         destruirBlocoBonus(proxima.linha, proxima.coluna);
         invalidarCacheMapa();
-        estatisticas.caixasDestruidas++;
-        ajustarPontos(PONTOS_POR_CAIXA);
+        if (dono != DONO_INIMIGO) { estatisticas.caixasDestruidas++; ajustarPontos(PONTOS_POR_CAIXA, dono); }
     }
-    propagarExplosao(celulas, dl, dc, proxima, alcanceRestante - 1);
+    propagarExplosao(celulas, dl, dc, proxima, alcanceRestante - 1, dono);
 }
 
-void matarInimigo(Inimigo& inimigo, int& pontuacao) {
+void matarInimigo(Inimigo& inimigo, int& pontuacao, int dono = -1) {
     inimigo.vivo = false;
     pontuacao += PONTOS_POR_INIMIGO;
+    if (dono == 0 || dono == 1) pontosJogador[dono] += PONTOS_POR_INIMIGO;
     estatisticas.inimigosAbatidos++;
 }
 
 void atingirPersonagens(vector<Inimigo>& listaInimigos,
                         EstadoJogo& estadoAtual, int& pontuacao) {
     // Os dados recebidos por referencia sao alterados diretamente.
-    if (corpoNaExplosao(jogadorVisualL,jogadorVisualC) && !imuneAPropriaBomba) { estadoAtual = DERROTA; jogadoresAtingidos|=1; }
-    if (segundoJogadorAtivo() && corpoNaExplosao(jogador2VisualL,jogador2VisualC) && !imuneAPropriaBomba) { estadoAtual = DERROTA; jogadoresAtingidos|=2; }
+    bool emJogo = estadoAtual == JOGANDO;
+    int donoP1 = jogadorEmCampo(1) ? donoDaChamaNoJogador(jogadorVisualL,jogadorVisualC,1) : -1;
+    int donoP2 = jogadorEmCampo(2) ? donoDaChamaNoJogador(jogador2VisualL,jogador2VisualC,2) : -1;
+    // Modo inimigos: derrubar o rival vale como derrubar um inimigo.
+    if (emJogo && donoP1 == 1) { pontuacao += PONTOS_POR_INIMIGO; pontosJogador[1] += PONTOS_POR_INIMIGO; }
+    if (emJogo && donoP2 == 0) { pontuacao += PONTOS_POR_INIMIGO; pontosJogador[0] += PONTOS_POR_INIMIGO; }
+    if (donoP1 >= 0) derrubarJogador(1);
+    if (donoP2 >= 0) derrubarJogador(2);
+    if (estado == DERROTA) estadoAtual = DERROTA;
     for (Inimigo& inimigo : listaInimigos) {
-        if (inimigo.vivo && corpoNaExplosao(inimigo.visualL,inimigo.visualC)) matarInimigo(inimigo, pontuacao);
+        if (!inimigo.vivo) continue;
+        int dono = donoDaChama(inimigo.visualL,inimigo.visualC,bombaFereInimigo);
+        if (dono >= 0) matarInimigo(inimigo, pontuacao, dono);
     }
 }
 
@@ -951,21 +1552,39 @@ void atingirPersonagens(vector<Inimigo>& listaInimigos,
 // bomba (nao mais global) porque agora varias bombas podem estar explodindo
 // ao mesmo tempo; cada explosao conta no maximo 1 acerto, mesmo durando
 // varios ticks de logica seguidos.
+void concluirLutaBoss(int dono = -1){
+    boss.vivo=false;
+    boss.morteMs=bossAnimado()?1050:0;
+    boss.relogioPoseMs=0;boss.acaoEspecial=0;boss.tempoEspecialMs=0;
+    boss.movendo=false;boss.investindo=false;boss.avisoInvestidaMs=0;
+    boss.alturaHornet=0;
+    bossConcluido=boss.morteMs==0;
+    ajustarPontos(PONTOS_POR_BOSS, dono);
+    if(bossConcluido)colocarPortal();
+}
+void entrarEtapaHornet(EtapaHornet etapa,int duracao){
+    boss.etapaHornet=etapa;boss.tempoEtapaHornetMs=duracao;boss.duracaoEtapaHornetMs=duracao;
+}
+void reagirDanoHornet(){
+    if(indiceBoss()!=2 || boss.vida<=0)return;
+    boss.contraPendenteHornet=boss.contraPendenteHornet || boss.etapaHornet==H_GUARDA;
+    // Termina o deslocamento no destino antes da recuperacao, sem teleportar.
+    if(boss.movendo || hornetNoAr())return;
+    entrarEtapaHornet(H_DANO,480);
+}
 void atingirBoss() {
     if (!boss.vivo || boss.imunidadeMs>0) return;
     for (Bomba& b : bombas) {
-        if (!b.explodindo || b.bossAtingido) continue;
+        if (!b.explodindo || b.bossAtingido || b.dono == DONO_INIMIGO) continue;
         bool atingiu = false;
         for (const Posicao& p : b.celulasExplosao) if (celulaBoss(p.linha,p.coluna)) { atingiu = true; break; }
         if (!atingiu) continue;
         b.bossAtingido = true;
         boss.vida=max(0,boss.vida-4);
         boss.imunidadeMs=IMUNIDADE_BOSS_MS;
+        reagirDanoHornet();
         if (boss.vida <= 0) {
-            boss.vivo = false;
-            bossConcluido = true;
-            pontos += PONTOS_POR_BOSS;
-            colocarPortal();
+            concluirLutaBoss(b.dono);
         }
         break;
     }
@@ -976,10 +1595,11 @@ void iniciarExplosaoBomba(Bomba& b) {
     b.tempoMs = TEMPO_EXPLOSAO_MS;
     b.celulasExplosao.clear();
     b.celulasExplosao.push_back(b.posicao);
-    propagarExplosao(b.celulasExplosao, -1, 0, b.posicao, alcanceExplosao);
-    propagarExplosao(b.celulasExplosao, 1, 0, b.posicao, alcanceExplosao);
-    propagarExplosao(b.celulasExplosao, 0, -1, b.posicao, alcanceExplosao);
-    propagarExplosao(b.celulasExplosao, 0, 1, b.posicao, alcanceExplosao);
+    int alcance = alcanceDaBomba(b);
+    propagarExplosao(b.celulasExplosao, -1, 0, b.posicao, alcance, b.dono);
+    propagarExplosao(b.celulasExplosao, 1, 0, b.posicao, alcance, b.dono);
+    propagarExplosao(b.celulasExplosao, 0, -1, b.posicao, alcance, b.dono);
+    propagarExplosao(b.celulasExplosao, 0, 1, b.posicao, alcance, b.dono);
     atingirPersonagens(inimigos, estado, pontos);
     atingirBoss();
 }
@@ -1077,7 +1697,8 @@ void moverIndividualAleatorio(Inimigo& inimigo, int indice) {
 // mais perto do inimigo do que o jogador 1 (senao os inimigos ignorariam o
 // segundo jogador e so perseguiriam o primeiro).
 Posicao alvoDePerseguicaoPara(Posicao origemInimigo) {
-    if (!segundoJogadorAtivo()) return jogador;
+    if (!jogadorEmCampo(2)) return jogador;
+    if (!jogadorEmCampo(1)) return jogador2;
     int distJ1 = abs(origemInimigo.linha - jogador.linha) + abs(origemInimigo.coluna - jogador.coluna);
     int distJ2 = abs(origemInimigo.linha - jogador2.linha) + abs(origemInimigo.coluna - jogador2.coluna);
     return distJ2 < distJ1 ? jogador2 : jogador;
@@ -1118,7 +1739,8 @@ void moverInimigos(int tempoMs) {
         if (inimigo.especial) {
             perseguir = true;
         } else {
-            int distancia = abs(inimigo.posicao.linha - jogador.linha) + abs(inimigo.posicao.coluna - jogador.coluna);
+            Posicao alvo = alvoDePerseguicaoPara(inimigo.posicao);
+            int distancia = abs(inimigo.posicao.linha - alvo.linha) + abs(inimigo.posicao.coluna - alvo.coluna);
             int chance = dificuldade == FACIL ? CHANCE_PERSEGUICAO_FACIL
                        : dificuldade == MEDIO ? CHANCE_PERSEGUICAO_MEDIO
                                                : CHANCE_PERSEGUICAO_DIFICIL;
@@ -1130,10 +1752,37 @@ void moverInimigos(int tempoMs) {
     }
 }
 
+bool celulaNoAlcance(Posicao origemBomba, Posicao p, int alcance);
+// Bombas de inimigos (Medio/Dificil): quem tem a habilidade solta uma bomba
+// quando um jogador esta na linha da explosao. Ela fere so os jogadores (e o
+// Mario), com alcance fixo, e cada inimigo espera a recarga antes da proxima.
+bool jogadorNaMira(Posicao origem, Posicao alvo) {
+    return !iguais(origem, alvo) && celulaNoAlcance(origem, alvo, ALCANCE_BOMBA_INIMIGO);
+}
+void soltarBombasInimigos(int tempoMs) {
+    uniform_int_distribution<int> recarga(RECARGA_BOMBA_INIMIGO_MIN_MS, RECARGA_BOMBA_INIMIGO_MAX_MS);
+    for (Inimigo& inimigo : inimigos) {
+        if (!inimigo.vivo || !inimigo.soltaBomba) continue;
+        inimigo.recargaBombaMs = max(0, inimigo.recargaBombaMs - tempoMs);
+        if (inimigo.recargaBombaMs > 0 || estado != JOGANDO ||
+            !visualNoDestino(inimigo.visualL, inimigo.visualC, inimigo.posicao) || bombaEm(inimigo.posicao)) continue;
+        bool alvo = (jogadorEmCampo(1) && jogadorNaMira(inimigo.posicao, jogador)) ||
+                    (jogadorEmCampo(2) && jogadorNaMira(inimigo.posicao, jogador2));
+        if (!alvo) continue;
+        Bomba nova;
+        nova.posicao = inimigo.posicao;
+        nova.ativa = true;
+        nova.tempoMs = TEMPO_BOMBA_MS;
+        nova.dono = DONO_INIMIGO;
+        bombas.push_back(nova);
+        inimigo.recargaBombaMs = recarga(gerador);
+    }
+}
+
 // Limpa somente o interior percorrido; bordas e surpresa do Mario permanecem.
 void abrirPassagemBoss(Posicao alvo) {
     int top=min(alvo.linha,boss.posicao.linha),bottom=max(alvo.linha,boss.posicao.linha)+2;
-    int left=min(alvo.coluna,boss.posicao.coluna),right=max(alvo.coluna,boss.posicao.coluna)+3;
+    int left=min(alvo.coluna,boss.posicao.coluna),right=max(alvo.coluna,boss.posicao.coluna)+larguraBoss();
     for(int l=top;l<bottom;++l)for(int c=left;c<right;++c){
         if(mapa[l][c]!=VAZIO)impactosBoss.push_back({l+.5f,c+.5f,0,MACHADO});
         mapa[l][c]=VAZIO;
@@ -1146,9 +1795,9 @@ void abrirPassagemBoss(Posicao alvo) {
 // Avanco normal preserva as regras do boss do Insano.
 bool iniciarAvancoBoss(int dl,int dc,int distancia) {
     Posicao alvo{boss.posicao.linha+dl*distancia,boss.posicao.coluna+dc*distancia};
-    if(alvo.linha<1 || alvo.coluna<1 || alvo.linha+2>LINHAS-1 || alvo.coluna+3>COLUNAS-1) return false;
+    if(alvo.linha<1 || alvo.coluna<1 || alvo.linha+2>LINHAS-1 || alvo.coluna+larguraBoss()>COLUNAS-1) return false;
     int top=min(alvo.linha,boss.posicao.linha), bottom=max(alvo.linha,boss.posicao.linha)+2;
-    int left=min(alvo.coluna,boss.posicao.coluna), right=max(alvo.coluna,boss.posicao.coluna)+3;
+    int left=min(alvo.coluna,boss.posicao.coluna), right=max(alvo.coluna,boss.posicao.coluna)+larguraBoss();
     auto ocupa=[&](float l,float c){return c+.85f>left && c+.15f<right && l+.85f>top && l+.15f<bottom;};
     if(marioAliado.escondido && marioAliado.bloco.coluna>=left && marioAliado.bloco.coluna<right && marioAliado.bloco.linha>=top && marioAliado.bloco.linha<bottom)return false;
     if(marioAliado.ativo && marioAliado.hp>0 && (ocupa(marioAliado.l,marioAliado.c)||ocupa(marioAliado.posicao.linha,marioAliado.posicao.coluna)))return false;
@@ -1159,10 +1808,26 @@ bool iniciarAvancoBoss(int dl,int dc,int distancia) {
     return true;
 }
 void ferirMario();
+// Antecipacao discreta da trajetoria: 15% do tempo estimado de voo.
+// Usa somente deslocamento real em curso, nunca a ultima direcao parada.
+pair<float,float> anteciparAlvoBoss(float l,float c,float origemL,float origemC,float velocidade){
+    float dl=0,dc=0;
+    if(abs(l-jogadorVisualL)<.001f && abs(c-jogadorVisualC)<.001f){dl=jogador.linha-l;dc=jogador.coluna-c;}
+    else if(segundoJogadorAtivo() && abs(l-jogador2VisualL)<.001f && abs(c-jogador2VisualC)<.001f){dl=jogador2.linha-l;dc=jogador2.coluna-c;}
+    else if(marioAliado.ativo && abs(l-marioAliado.l)<.001f && abs(c-marioAliado.c)<.001f){dl=marioAliado.posicao.linha-l;dc=marioAliado.posicao.coluna-c;}
+    float n=hypot(dl,dc);
+    float avanco=min(.75f,hypot(l+.5f-origemL,c+.5f-origemC)/velocidade*.15f*VELOCIDADE_VISUAL_CELS_SEG);
+    if(n>.001f){l+=dl/n*avanco;c+=dc/n*avanco;}
+    return {clamp(l,1.f,float(LINHAS-2)),clamp(c,1.f,float(COLUNAS-2))};
+}
+int direcaoPerseguicaoBoss(){
+    float dl=jogadorVisualL+.5f-(boss.visualL+1),dc=jogadorVisualC+.5f-(boss.visualC+larguraBoss()/2.f);
+    return abs(dc)>=abs(dl)?(dc>=0?1:3):(dl>=0?2:0);
+}
 bool prepararInvestidaBoss() {
     if(boss.movendo || boss.investindo)return false;
     float alvoL=jogadorVisualL+.5f,alvoC=jogadorVisualC+.5f;
-    float origemL=boss.visualL+1,origemC=boss.visualC+1.5f;
+    float origemL=boss.visualL+1,origemC=boss.visualC+larguraBoss()/2.f;
     auto considerar=[&](float l,float c){if(hypot(l+.5f-origemL,c+.5f-origemC)<hypot(alvoL-origemL,alvoC-origemC)){alvoL=l+.5f;alvoC=c+.5f;}};
     if(segundoJogadorAtivo())considerar(jogador2VisualL,jogador2VisualC);
     if(marioAliado.ativo && marioAliado.hp>0)considerar(marioAliado.l,marioAliado.c);
@@ -1171,8 +1836,8 @@ bool prepararInvestidaBoss() {
     else dl=alvoL>=origemL?1:-1;
     Posicao destino=boss.posicao;
     for(int passo=1;passo<=4;++passo){Posicao p{boss.posicao.linha+dl*passo,boss.posicao.coluna+dc*passo};
-        if(p.linha<1 || p.coluna<1 || p.linha+2>LINHAS-1 || p.coluna+3>COLUNAS-1)break;
-        if(marioAliado.escondido && marioAliado.bloco.linha>=p.linha && marioAliado.bloco.linha<p.linha+2 && marioAliado.bloco.coluna>=p.coluna && marioAliado.bloco.coluna<p.coluna+3)break;
+        if(p.linha<1 || p.coluna<1 || p.linha+2>LINHAS-1 || p.coluna+larguraBoss()>COLUNAS-1)break;
+        if(marioAliado.escondido && marioAliado.bloco.linha>=p.linha && marioAliado.bloco.linha<p.linha+2 && marioAliado.bloco.coluna>=p.coluna && marioAliado.bloco.coluna<p.coluna+larguraBoss())break;
         destino=p;
     }
     if(iguais(destino,boss.posicao))return false;
@@ -1182,11 +1847,28 @@ bool prepararInvestidaBoss() {
 void criarPoderBoss() {
     boss.animAtaqueMs=700;
     ++boss.sequenciaAtaque;
+    if(indiceBoss()==2){
+        if(boss.etapaHornet!=H_IDLE || boss.movendo){--boss.sequenciaAtaque;return;}
+        boss.acaoEspecial=(boss.sequenciaAtaque-1)%5+1;
+        boss.olhandoDireita=jogadorVisualC>boss.visualC;
+        boss.tempoProximoAtaqueMs=INTERVALO_ATAQUE_BOSS_MS;
+        switch(boss.acaoEspecial){
+            case 1:entrarEtapaHornet(H_PREP_AGULHA,750);break;
+            case 2:case 4:
+                if(prepararInvestidaBoss())entrarEtapaHornet(boss.acaoEspecial==2?H_PREP_DASH:H_PREP_AEREO,1000);
+                else {boss.acaoEspecial=0;boss.tempoProximoAtaqueMs=1000;}
+                break;
+            case 3:entrarEtapaHornet(H_PREP_SALTO,350);break;
+            case 5:entrarEtapaHornet(H_GUARDA,1200);break;
+        }
+        return;
+    }
     auto lancar=[&](float l,float c,PoderBoss poder,float desvio=0.f){
-        float origemL=boss.visualL+.8f,origemC=boss.visualC+1.5f;
-        float angulo=atan2(l+.5f-origemL,c+.5f-origemC)+desvio;
+        float origemL=boss.visualL+.8f,origemC=boss.visualC+larguraBoss()/2.f;
         float velocidade=poder==MACHADO?2.8f:poder==ENERGIA?3.6f:3.f;
-        projeteisBoss.push_back({origemL,origemC,sin(angulo)*velocidade,cos(angulo)*velocidade,0,4.5f,poder,700});
+        auto alvo=anteciparAlvoBoss(l,c,origemL,origemC,velocidade);
+        float angulo=atan2(alvo.first+.5f-origemL,alvo.second+.5f-origemC)+desvio*.85f;
+        projeteisBoss.push_back({origemL,origemC,sin(angulo)*velocidade,cos(angulo)*velocidade,0,4.5f*FATOR_FORCA_BOSS,poder,700});
         if(poder==MACHADO)projeteisBoss.back().arma=boss.sequenciaAtaque%2;
     };
     auto participantes=[&](auto atacar){
@@ -1194,6 +1876,30 @@ void criarPoderBoss() {
         if(segundoJogadorAtivo())atacar(jogador2VisualL,jogador2VisualC);
         if(marioAliado.ativo && marioAliado.hp>0)atacar(marioAliado.l,marioAliado.c);
     };
+    if(bossAnimado()) {
+        boss.acaoEspecial=(boss.sequenciaAtaque-1)%(indiceBoss()==2?3:4)+1;
+        boss.relogioPoseMs=0;
+        boss.olhandoDireita=jogadorVisualC>boss.visualC;
+        if(boss.acaoEspecial==1){
+            // Pose de preparacao precede o voo; a agulha regressa pelo mesmo fio.
+            boss.tempoEspecialMs=1500;
+            participantes([&](float l,float c){
+                if(indiceBoss()==2)lancar(l,c,AGULHA);
+                else for(float desvio:{-.20f,0.f,.20f})lancar(l,c,FOGO_BOWSER,desvio);
+            });
+        } else if(boss.acaoEspecial==2){
+            boss.tempoEspecialMs=2200;
+            if(boss.movendo)boss.investidaPendente=true;else prepararInvestidaBoss();
+        } else if(boss.acaoEspecial==3){
+            // Salto anunciado; a aterrissagem libera sprites em anel, com espacos.
+            boss.tempoEspecialMs=1800;
+            boss.tempoProximoMovimentoMs=2200;
+        } else {
+            boss.tempoEspecialMs=1500;
+            boss.tempoProximoMovimentoMs=1800;
+        }
+        return;
+    }
     switch(indiceBoss()) {
         case MACHADO:
             participantes([&](float l,float c){lancar(l,c,MACHADO);});break;
@@ -1204,10 +1910,11 @@ void criarPoderBoss() {
         case VENENO:
             participantes([&](float l,float c){for(float desvio:{-.24f,0.f,.24f})lancar(l,c,VENENO,desvio);});break;
         case CHUVA_FOGO:
-            // O fogo da fase 8 conserva os parametros do estudo.
+            // Campanha reforcada; o executavel Insano conserva o estudo.
             participantes([&](float l,float c){float origemL=boss.visualL+.8f,origemC=boss.visualC+1.5f;
-                float dl=l+.5f-origemL,dc=c+.5f-origemC,n=max(.1f,hypot(dl,dc));
-                fogosBoss.push_back({origemL,origemC,dl/n*3.2f,dc/n*3.2f,4.f});});break;
+                auto alvo=anteciparAlvoBoss(l,c,origemL,origemC,3.2f);
+                float dl=alvo.first+.5f-origemL,dc=alvo.second+.5f-origemC,n=max(.1f,hypot(dl,dc));
+                fogosBoss.push_back({origemL,origemC,dl/n*3.2f,dc/n*3.2f,4.f*FATOR_FORCA_BOSS});});break;
     }
 }
 void terminarProjetilBoss(ProjetilBoss& p) {
@@ -1215,6 +1922,9 @@ void terminarProjetilBoss(ProjetilBoss& p) {
     int l=int(p.l),c=int(p.c);
     if(p.poder==VENENO && dentro(l,c) && mapa[l][c]==VAZIO)
         areasBoss.push_back({{l,c},0,2200,VENENO});
+}
+void recolherAgulha(ProjetilBoss& p){
+    if(!p.retornando){p.retornando=true;p.vida=3.f;}
 }
 void atualizarProjeteisBoss(int tempoMs) {
     float dt=tempoMs/1000.f;
@@ -1224,18 +1934,28 @@ void atualizarProjeteisBoss(int tempoMs) {
         if(p.avisoMs>0){int aviso=p.avisoMs;p.avisoMs=max(0,p.avisoMs-tempoMs);restante=max(0.f,(tempoMs-aviso)/1000.f);}
         // Subpassos impedem atravessar paredes/corpos quando um quadro atrasa.
         while(restante>0 && p.vida>0){float passo=min(restante,.025f);restante-=passo;
-            float antesL=p.l,antesC=p.c;p.l+=p.vl*passo;p.c+=p.vc*passo;p.idade+=passo;p.vida-=passo;
+            float antesL=p.l,antesC=p.c;
+            if(p.poder==AGULHA){
+                if(!p.retornando && p.idade+passo>=1.1f*FATOR_FORCA_BOSS)recolherAgulha(p);
+                if(p.retornando){float dl=p.origemL-p.l,dc=p.origemC-p.c,n=hypot(dl,dc);
+                    if(n<.12f){p.vida=0;break;}p.vl=dl/max(.01f,n)*3.f;p.vc=dc/max(.01f,n)*3.f;}
+            }
+            p.l+=p.vl*passo;p.c+=p.vc*passo;p.idade+=passo;p.vida-=passo;
             int l=int(p.l),c=int(p.c);
             if(!dentro(l,c)){p.vida=0;break;}
-            if(mapa[l][c]==PAREDE_SOLIDA || (marioAliado.escondido && iguais({l,c},marioAliado.bloco))){p.l=antesL;p.c=antesC;terminarProjetilBoss(p);break;}
+            if((mapa[l][c]==PAREDE_SOLIDA || (marioAliado.escondido && iguais({l,c},marioAliado.bloco))) && !(p.poder==AGULHA && p.retornando)){p.l=antesL;p.c=antesC;
+                if(p.poder==AGULHA && !p.retornando){recolherAgulha(p);continue;}
+                if(p.poder!=AGULHA || !p.retornando){terminarProjetilBoss(p);break;}}
             if(mapa[l][c]==PAREDE_FRAGIL || mapa[l][c]==PAREDE_BONUS){
                 if(mapa[l][c]==PAREDE_BONUS)destruirBlocoBonus(l,c);
-                mapa[l][c]=VAZIO;invalidarCacheMapa();terminarProjetilBoss(p);break;
+                mapa[l][c]=VAZIO;invalidarCacheMapa();
+                if(p.poder==AGULHA && !p.retornando){recolherAgulha(p);continue;}
+                terminarProjetilBoss(p);break;
             }
             auto tocou=[&](float l,float c){return hypot(p.l-l-.5f,p.c-c-.5f)<.48f;};
             bool acertou=false;
-            if(tocou(jogadorVisualL,jogadorVisualC)){estado=DERROTA;jogadoresAtingidos|=1;acertou=true;}
-            if(segundoJogadorAtivo() && tocou(jogador2VisualL,jogador2VisualC)){estado=DERROTA;jogadoresAtingidos|=2;acertou=true;}
+            if(jogadorEmCampo(1) && tocou(jogadorVisualL,jogadorVisualC)){derrubarJogador(1);acertou=true;}
+            if(jogadorEmCampo(2) && tocou(jogador2VisualL,jogador2VisualC)){derrubarJogador(2);acertou=true;}
             if(marioAliado.ativo && marioAliado.hp>0 && tocou(marioAliado.l,marioAliado.c)){ferirMario();acertou=true;}
             if(acertou || p.vida<=0){terminarProjetilBoss(p);break;}
         }
@@ -1243,22 +1963,154 @@ void atualizarProjeteisBoss(int tempoMs) {
     projeteisBoss.erase(remove_if(projeteisBoss.begin(),projeteisBoss.end(),[](const ProjetilBoss& p){return p.vida<=0;}),projeteisBoss.end());
     impactosBoss.erase(remove_if(impactosBoss.begin(),impactosBoss.end(),[](const ImpactoBoss& i){return i.idade>=.4f;}),impactosBoss.end());
 }
+void soltarAgulhaHornet(){
+    float l=boss.visualL+1,c=boss.visualC+1;
+    auto alvo=anteciparAlvoBoss(jogadorVisualL,jogadorVisualC,l,c,3.f);
+    float a=atan2(alvo.first+.5f-l,alvo.second+.5f-c);
+    projeteisBoss.push_back({l,c,sin(a)*3.f,cos(a)*3.f,0,4.f,AGULHA,150});
+    projeteisBoss.back().origemL=l;projeteisBoss.back().origemC=c;
+}
+bool moverHornet(float dt,float velocidade){
+    float dl=boss.destino.linha-boss.visualL,dc=boss.destino.coluna-boss.visualC,n=hypot(dl,dc),passo=min(n,velocidade*dt);
+    if(dc!=0)boss.olhandoDireita=dc>0;
+    if(n>0){boss.visualL+=dl*passo/n;boss.visualC+=dc*passo/n;}
+    if(n-passo>.0001f)return false;
+    boss.posicao=boss.destino;boss.visualL=float(boss.posicao.linha);boss.visualC=float(boss.posicao.coluna);
+    boss.movendo=false;boss.investindo=false;return true;
+}
+void soltarFiosHornet(int quantidade){
+    float l=boss.visualL+1,c=boss.visualC+1;
+    for(int i=0;i<quantidade;++i){float a=i*6.2831853f/quantidade;
+        projeteisBoss.push_back({l,c,sin(a)*2.1f,cos(a)*2.1f,0,1.6f*FATOR_FORCA_BOSS,FIO,250});}
+}
+void atualizarHornet(int tempoMs){
+    // Subpassos preservam a ordem dos eventos mesmo com um quadro atrasado.
+    for(int restante=tempoMs;restante>0;){
+        int passo=min(16,restante);restante-=passo;float dt=passo/1000.f;
+        atualizarProjeteisBoss(passo);
+        if(estado!=JOGANDO)return;
+        boss.relogioPoseMs+=passo;boss.imunidadeMs=max(0,boss.imunidadeMs-passo);
+        boss.tempoProximoAtaqueMs-=passo;
+        if(boss.etapaHornet==H_IDLE){
+            boss.olhandoDireita=jogadorVisualC+.5f>boss.visualC+1;
+            boss.alturaHornet=0;boss.acaoEspecial=0;
+            if(boss.tempoProximoAtaqueMs<=0){criarPoderBoss();continue;}
+            if((boss.tempoProximoMovimentoMs-=passo)<=0){
+                int inicio=gerador()%4;if(gerador()%100<15)inicio=direcaoPerseguicaoBoss();
+                const int dl[]={-1,0,1,0},dc[]={0,1,0,-1};
+                bool moveu=false;
+                for(int k=0;k<4;++k){int d=(inicio+k)%4;if(iniciarAvancoBoss(dl[d],dc[d],1)){moveu=true;break;}}
+                if(moveu)entrarEtapaHornet(H_CORRIDA,0);else boss.tempoProximoMovimentoMs=750;
+            }
+            continue;
+        }
+        if(boss.etapaHornet==H_CORRIDA){
+            if(moverHornet(dt,2.1f)){entrarEtapaHornet(H_IDLE,0);boss.tempoProximoMovimentoMs=2400;}
+            continue;
+        }
+        if(boss.etapaHornet==H_DASH || boss.etapaHornet==H_AEREO){
+            bool aereo=boss.etapaHornet==H_AEREO;
+            if(moverHornet(dt,dificuldade==FACIL?3.7f:4.4f)){
+                if(!aereo)boss.alturaHornet=0;
+                entrarEtapaHornet(aereo?H_RECUP_AEREO:H_RECUP_DASH,480);
+            }else if(aereo)boss.alturaHornet=48;
+            continue;
+        }
+        boss.tempoEtapaHornetMs=max(0,boss.tempoEtapaHornetMs-passo);
+        if(boss.etapaHornet==H_PREP_DASH || boss.etapaHornet==H_PREP_AEREO)boss.avisoInvestidaMs=boss.tempoEtapaHornetMs;
+        float t=1.f-float(boss.tempoEtapaHornetMs)/max(1,boss.duracaoEtapaHornetMs);
+        if(boss.etapaHornet==H_SALTO)boss.alturaHornet=sin(t*1.5707963f)*65;
+        else if(boss.etapaHornet==H_PREP_GIRO || boss.etapaHornet==H_GIRO)boss.alturaHornet=65;
+        else if(boss.etapaHornet==H_POUSO)boss.alturaHornet=(1-t)*65;
+        else if(boss.etapaHornet==H_PREP_AEREO)boss.alturaHornet=t*48;
+        else if(boss.etapaHornet==H_RECUP_AEREO)boss.alturaHornet=(1-t)*48;
+        if(boss.etapaHornet==H_VOO_AGULHA){
+            bool voando=any_of(projeteisBoss.begin(),projeteisBoss.end(),[](const ProjetilBoss& p){return p.poder==AGULHA && p.vida>0;});
+            if(!voando)boss.tempoEtapaHornetMs=0;
+        }
+        if(boss.tempoEtapaHornetMs>0)continue;
+        switch(boss.etapaHornet){
+            case H_PREP_AGULHA:entrarEtapaHornet(H_LANCAR,360);soltarAgulhaHornet();break;
+            case H_LANCAR:entrarEtapaHornet(H_VOO_AGULHA,3000);break;
+            case H_VOO_AGULHA:entrarEtapaHornet(H_RECOLHER,480);break;
+            case H_PREP_DASH:case H_PREP_AEREO:{bool aereo=boss.etapaHornet==H_PREP_AEREO;
+                boss.avisoInvestidaMs=0;abrirPassagemBoss(boss.destino);boss.movendo=true;
+                entrarEtapaHornet(aereo?H_AEREO:H_DASH,0);break;}
+            case H_PREP_SALTO:entrarEtapaHornet(H_SALTO,550);break;
+            case H_SALTO:entrarEtapaHornet(H_PREP_GIRO,420);break;
+            case H_PREP_GIRO:entrarEtapaHornet(H_GIRO,660);soltarFiosHornet(dificuldade==FACIL?6:8);break;
+            case H_GIRO:entrarEtapaHornet(H_POUSO,500);break;
+            case H_GUARDA:
+                if(hypot(jogadorVisualL-boss.visualL-.5f,jogadorVisualC-boss.visualC-.5f)<3.f){entrarEtapaHornet(H_CONTRA,630);soltarFiosHornet(4);}
+                else entrarEtapaHornet(H_RECUP_CONTRA,480);
+                break;
+            case H_CONTRA:entrarEtapaHornet(H_RECUP_CONTRA,480);break;
+            case H_DANO:entrarEtapaHornet(H_RECUP_DANO,420);break;
+            case H_RECUP_DANO:
+                if(boss.contraPendenteHornet){boss.contraPendenteHornet=false;entrarEtapaHornet(H_CONTRA,630);soltarFiosHornet(4);break;}
+                if(any_of(projeteisBoss.begin(),projeteisBoss.end(),[](const ProjetilBoss& p){return p.poder==AGULHA && p.vida>0;})){
+                    entrarEtapaHornet(H_VOO_AGULHA,3000);break;}
+                // Recuperacao comum abaixo.
+                [[fallthrough]];
+            default:boss.alturaHornet=0;entrarEtapaHornet(H_IDLE,0);
+                boss.tempoProximoMovimentoMs=1200;boss.tempoProximoAtaqueMs=max(1000,boss.tempoProximoAtaqueMs);break;
+        }
+    }
+}
+void atualizarAreasBoss(int tempoMs){
+    for(auto& area:areasBoss) {
+        if(area.avisoMs>0){int restante=area.avisoMs-tempoMs;area.avisoMs=max(0,restante);if(restante<0)area.ativoMs+=restante;}
+        else area.ativoMs-=tempoMs;
+        if(area.avisoMs<=0 && area.ativoMs>0){
+            if(marioAliado.ativo && hypot(marioAliado.l-area.posicao.linha,marioAliado.c-area.posicao.coluna)<.72f)ferirMario();
+            if(jogadorEmCampo(1) && hypot(jogadorVisualL-area.posicao.linha,jogadorVisualC-area.posicao.coluna)<.72f)derrubarJogador(1);
+            if(jogadorEmCampo(2) && hypot(jogador2VisualL-area.posicao.linha,jogador2VisualC-area.posicao.coluna)<.72f)derrubarJogador(2);
+        }
+    }
+    areasBoss.erase(remove_if(areasBoss.begin(),areasBoss.end(),[](const AreaBoss& a){return a.ativoMs<=0;}),areasBoss.end());
+}
+
 void atualizarBoss(int tempoMs) {
-    if(!boss.vivo) return;
+    if(!boss.vivo) {
+        if(boss.morteMs>0){boss.morteMs=max(0,boss.morteMs-tempoMs);boss.relogioPoseMs+=tempoMs;
+            if(!boss.morteMs){bossConcluido=true;colocarPortal();}}
+        return;
+    }
+    if(indiceBoss()==2){atualizarHornet(tempoMs);atualizarAreasBoss(tempoMs);return;}
     float dt=tempoMs/1000.f;
+    boss.relogioPoseMs+=tempoMs;
+    if(bossAnimado() && boss.tempoEspecialMs>0){
+        int antes=boss.tempoEspecialMs;boss.tempoEspecialMs=max(0,antes-tempoMs);
+        if(boss.acaoEspecial==3 && antes>400 && boss.tempoEspecialMs<=400){
+            float l=boss.visualL+1,c=boss.visualC+larguraBoss()/2.f;
+            for(int i=0;i<8;++i){float a=i*3.1415926f/4;
+                projeteisBoss.push_back({l,c,sin(a)*2.4f,cos(a)*2.4f,0,1.8f*FATOR_FORCA_BOSS,indiceBoss()==2?FIO:FOGO_BOWSER,250});}
+        }
+        if(boss.acaoEspecial==4 && antes>750 && boss.tempoEspecialMs<=750){
+            float l=boss.visualL+1,c=boss.visualC+1.5f;
+            auto alvo=anteciparAlvoBoss(jogadorVisualL,jogadorVisualC,l,c,2.8f);
+            float a=atan2(alvo.first+.5f-l,alvo.second+.5f-c);
+            for(float desvio:{-.25f,0.f,.25f})projeteisBoss.push_back({l,c,sin(a+desvio*.85f)*2.8f,cos(a+desvio*.85f)*2.8f,0,2.f*FATOR_FORCA_BOSS,GOLPE_BOWSER,0});
+        }
+        if(!boss.tempoEspecialMs)boss.acaoEspecial=0;
+    }
     boss.imunidadeMs=max(0,boss.imunidadeMs-tempoMs);
     boss.animAtaqueMs=max(0,boss.animAtaqueMs-tempoMs);
+    if(!boss.movendo && !boss.investindo)boss.olhandoDireita=jogadorVisualC+.5f>boss.visualC+larguraBoss()/2.f;
     if(boss.avisoInvestidaMs>0){
         boss.avisoInvestidaMs=max(0,boss.avisoInvestidaMs-tempoMs);
         if(boss.avisoInvestidaMs==0){abrirPassagemBoss(boss.destino);boss.movendo=true;}
     } else if(boss.movendo) {
         float dl=boss.destino.linha-boss.visualL, dc=boss.destino.coluna-boss.visualC;
-        float distancia=hypot(dl,dc), passo=min(distancia,dt*(boss.investindo?4.8f:1.5f));
+        float velocidade=boss.investindo?4.8f:indiceBoss()==2?2.1f:1.5f;
+        float distancia=hypot(dl,dc), passo=min(distancia,dt*velocidade);
+        if(dc!=0)boss.olhandoDireita=dc>0;
         if(distancia>0){boss.visualL+=dl*passo/distancia;boss.visualC+=dc*passo/distancia;}
         if(distancia-passo<.0001f){boss.posicao=boss.destino;boss.visualL=float(boss.posicao.linha);boss.visualC=float(boss.posicao.coluna);boss.movendo=false;boss.investindo=false;boss.tempoProximoMovimentoMs=INTERVALO_MOVIMENTO_BOSS_MS;}
-    } else if((boss.tempoProximoMovimentoMs-=tempoMs)<=0) {
+    } else if(!(bossAnimado() && boss.tempoEspecialMs>0) && (boss.tempoProximoMovimentoMs-=tempoMs)<=0) {
         int dl[4]={-1,0,1,0},dc[4]={0,1,0,-1};
         int preferido=boss.horizontal?(gerador()%2?1:3):(gerador()%2?0:2), outro=boss.horizontal?0:1;
+        if(gerador()%100<15){preferido=direcaoPerseguicaoBoss();outro=preferido%2?0:1;}
         bool moveu=false;
         for(int distancia:{2,1}) {for(int d:{preferido,(preferido+2)%4,outro,(outro+2)%4}) if(iniciarAvancoBoss(dl[d],dc[d],distancia)){moveu=true;break;} if(moveu)break;}
         if(!moveu)boss.tempoProximoMovimentoMs=750;
@@ -1269,16 +2121,7 @@ void atualizarBoss(int tempoMs) {
         criarPoderBoss();
     }
     atualizarProjeteisBoss(tempoMs);
-    for(auto& area:areasBoss) {
-        if(area.avisoMs>0){int restante=area.avisoMs-tempoMs;area.avisoMs=max(0,restante);if(restante<0)area.ativoMs+=restante;}
-        else area.ativoMs-=tempoMs;
-        if(area.avisoMs<=0 && area.ativoMs>0){
-            if(marioAliado.ativo && hypot(marioAliado.l-area.posicao.linha,marioAliado.c-area.posicao.coluna)<.72f)ferirMario();
-            if(hypot(jogadorVisualL-area.posicao.linha,jogadorVisualC-area.posicao.coluna)<.72f){estado=DERROTA;jogadoresAtingidos|=1;}
-            if(segundoJogadorAtivo() && hypot(jogador2VisualL-area.posicao.linha,jogador2VisualC-area.posicao.coluna)<.72f){estado=DERROTA;jogadoresAtingidos|=2;}
-        }
-    }
-    areasBoss.erase(remove_if(areasBoss.begin(),areasBoss.end(),[](const AreaBoss& a){return a.ativoMs<=0;}),areasBoss.end());
+    atualizarAreasBoss(tempoMs);
     for(auto& f:fogosBoss){
         f.l+=f.vl*dt;f.c+=f.vc*dt;f.vida-=dt;
         int l=int(f.l),c=int(f.c);
@@ -1287,8 +2130,8 @@ void atualizarBoss(int tempoMs) {
         else if(mapa[l][c]==PAREDE_SOLIDA && l>2)f.vida=0;
         else if(marioAliado.escondido && iguais({l,c},marioAliado.bloco)){f.vida=0;}
         else if(mapa[l][c]==PAREDE_FRAGIL || mapa[l][c]==PAREDE_BONUS){mapa[l][c]=VAZIO;f.vida=0;invalidarCacheMapa();}
-        if(hypot(f.l-jogadorVisualL-.5f,f.c-jogadorVisualC-.5f)<.5f){estado=DERROTA;jogadoresAtingidos|=1;f.vida=0;}
-        if(segundoJogadorAtivo() && hypot(f.l-jogador2VisualL-.5f,f.c-jogador2VisualC-.5f)<.5f){estado=DERROTA;jogadoresAtingidos|=2;f.vida=0;}
+        if(jogadorEmCampo(1) && hypot(f.l-jogadorVisualL-.5f,f.c-jogadorVisualC-.5f)<.5f){derrubarJogador(1);f.vida=0;}
+        if(jogadorEmCampo(2) && hypot(f.l-jogador2VisualL-.5f,f.c-jogador2VisualC-.5f)<.5f){derrubarJogador(2);f.vida=0;}
     }
     fogosBoss.erase(remove_if(fogosBoss.begin(),fogosBoss.end(),[](const FogoBoss& f){return f.vida<=0;}),fogosBoss.end());
 }
@@ -1311,13 +2154,14 @@ void verificarVitoria() {
 // origemBomba", sem depender da bomba de verdade estar ativa. Usada tanto
 // para o perigo da bomba real (perigoDaBomba) quanto para o bot simular,
 // antes de plantar, se uma bomba hipotetica ali teria escape (existeFugaSegura).
-bool celulaNoAlcance(Posicao origemBomba, Posicao p) {
+bool celulaNoAlcance(Posicao origemBomba, Posicao p, int alcance = -1) {
+    if (alcance < 0) alcance = alcanceExplosao;
     if (iguais(p, origemBomba)) return true;
     int dl = p.linha - origemBomba.linha;
     int dc = p.coluna - origemBomba.coluna;
     if (dl != 0 && dc != 0) return false;
     int distancia = abs(dl) + abs(dc);
-    if (distancia > alcanceExplosao) return false;
+    if (distancia > alcance) return false;
     int passoL = (dl > 0) - (dl < 0);
     int passoC = (dc > 0) - (dc < 0);
     for (int i = 1; i <= distancia; i++) {
@@ -1330,7 +2174,7 @@ bool celulaNoAlcance(Posicao origemBomba, Posicao p) {
 }
 
 bool perigoDaBomba(Posicao p) {
-    for (const Bomba& b : bombas) if (b.ativa && celulaNoAlcance(b.posicao, p)) return true;
+    for (const Bomba& b : bombas) if (b.ativa && celulaNoAlcance(b.posicao, p, alcanceDaBomba(b))) return true;
     return false;
 }
 
@@ -1392,7 +2236,7 @@ Posicao proximoPassoDoBot() {
 bool perigoDoBoss(Posicao p) {
     if(!boss.vivo)return false;
     if(boss.investindo){int top=min(boss.posicao.linha,boss.destino.linha),left=min(boss.posicao.coluna,boss.destino.coluna);
-        if(p.linha>=top && p.linha<max(boss.posicao.linha,boss.destino.linha)+2 && p.coluna>=left && p.coluna<max(boss.posicao.coluna,boss.destino.coluna)+3)return true;}
+        if(p.linha>=top && p.linha<max(boss.posicao.linha,boss.destino.linha)+2 && p.coluna>=left && p.coluna<max(boss.posicao.coluna,boss.destino.coluna)+larguraBoss())return true;}
     for(const auto& a:areasBoss)if(iguais(a.posicao,p))return true;
     for(const auto& f:projeteisBoss)if(f.avisoMs<=0 && hypot(f.l-p.linha-.5f,f.c-p.coluna-.5f)<1.2f)return true;
     for(const auto& f:fogosBoss)if(hypot(f.l-p.linha-.5f,f.c-p.coluna-.5f)<1.2f)return true;
@@ -1406,7 +2250,9 @@ Posicao proximoPassoParaFuga() {
 void ferirMario() {
     if(estado!=JOGANDO || !marioAliado.ativo || marioAliado.hp<=0 || marioAliado.imunidade>0)return;
     --marioAliado.hp;marioAliado.imunidade=1.6f;
-    if(marioAliado.hp==0){estado=DERROTA;jogadoresAtingidos|=4;}
+    // No modo inimigos ele e de um so jogador: cair nao encerra a rodada.
+    // Com dois jogadores (cada um com suas vidas) a queda dele nao encerra a fase.
+    if(marioAliado.hp==0){if(segundoJogadorAtivo())marioAliado.ativo=false;else{estado=DERROTA;jogadoresAtingidos|=4;}}
 }
 bool marioPodeAndar(Posicao p){return dentro(p.linha,p.coluna) && livre(p.linha,p.coluna) && !bombaEm(p) && !bloqueadoBoss(p);}
 int fugaMario(){
@@ -1426,7 +2272,11 @@ void lancarMacaMario(){
     float tx=m.c+MARIO_DC[m.direcao]*3+.5f,ty=m.l+MARIO_DL[m.direcao]*3+.5f,maisPerto=1e9f;
     for(const auto& i:inimigos)if(i.vivo){float d=hypot(i.visualC-m.c,i.visualL-m.l);
         if(d<maisPerto){maisPerto=d;tx=i.posicao.coluna+.5f;ty=i.posicao.linha+.5f;}}
-    if(boss.vivo && hypot(m.c-boss.visualC-1,m.l-boss.visualL)<maisPerto){tx=boss.visualC+1.5f;ty=boss.visualL+1;}
+    // Modo inimigos: o jogador rival de quem libertou o Mario tambem e alvo.
+    if(m.dono>=0 && jogadorEmCampo(2-m.dono)){float rl=m.dono==0?jogador2VisualL:jogadorVisualL,rc=m.dono==0?jogador2VisualC:jogadorVisualC;
+        Posicao rp=m.dono==0?jogador2:jogador;float d=hypot(rc-m.c,rl-m.l);
+        if(d<maisPerto){maisPerto=d;tx=rp.coluna+.5f;ty=rp.linha+.5f;}}
+    if(boss.vivo && hypot(m.c-boss.visualC-1,m.l-boss.visualL)<maisPerto){tx=boss.visualC+larguraBoss()/2.f;ty=boss.visualL+1;}
     tx=clamp(tx,1.5f,COLUNAS-1.5f);ty=clamp(ty,1.5f,LINHAS-1.5f);
     float sx=m.c+.5f,sy=m.l+.5f;
     macasMario.push_back({sx,sy,tx,ty,0,clamp(hypot(tx-sx,ty-sy)/5,.65f,1.45f)});
@@ -1437,13 +2287,13 @@ void atualizarMario(int tempoMs){
     float dt=tempoMs/1000.f;m.imunidade=max(0.f,m.imunidade-dt);m.recarga-=dt;m.pose=max(0.f,m.pose-dt);
     if(m.hp>0){
         m.andando=false;
-        if(m.movendo>=0){float dl=m.posicao.linha-m.l,dc=m.posicao.coluna-m.c,n=hypot(dl,dc),passo=min(n,4.2f*dt);
+        if(m.movendo>=0){float dl=m.posicao.linha-m.l,dc=m.posicao.coluna-m.c,n=hypot(dl,dc),passo=min(n,4.2f*FATOR_MARIO*dt);
             if(n>0){m.l+=dl*passo/n;m.c+=dc*passo/n;}m.distancia+=passo;m.andando=passo>0;
             if(n-passo<.0001f){m.l=float(m.posicao.linha);m.c=float(m.posicao.coluna);m.movendo=-1;}}
         if(corpoNaExplosao(m.l,m.c))ferirMario();
         if(boss.investindo && contatoComInimigo(m.l,m.c))ferirMario();
         for(const auto& i:inimigos)if(i.vivo && hypot(m.l-i.visualL,m.c-i.visualC)<.55f)ferirMario();
-        for(auto it=macasNoChao.begin();it!=macasNoChao.end();)if(iguais(*it,m.posicao)){it=macasNoChao.erase(it);pontos+=100;m.recarga=0;}else ++it;
+        for(auto it=macasNoChao.begin();it!=macasNoChao.end();)if(iguais(*it,m.posicao)){it=macasNoChao.erase(it);m.recarga=0;}else ++it;
         m.pensar-=dt;
         if(m.movendo<0 && m.pensar<=0){m.pensar=.04f;int direcao=-1;
             if(perigoDaBomba(m.posicao)||perigoDoBoss(m.posicao))direcao=fugaMario();
@@ -1463,16 +2313,56 @@ void atualizarMario(int tempoMs){
         Posicao p{int(a.ty),int(a.tx)};bool acertou=false;
         if(dentro(p.linha,p.coluna) && (mapa[p.linha][p.coluna]==PAREDE_FRAGIL || mapa[p.linha][p.coluna]==PAREDE_BONUS)){
             if(mapa[p.linha][p.coluna]==PAREDE_BONUS)destruirBlocoBonus(p.linha,p.coluna);
-            mapa[p.linha][p.coluna]=VAZIO;invalidarCacheMapa();pontos+=10;acertou=true;}
-        for(auto& i:inimigos)if(i.vivo && hypot(a.tx-i.visualC-.5f,a.ty-i.visualL-.5f)<.95f){matarInimigo(i,pontos);acertou=true;}
+            mapa[p.linha][p.coluna]=VAZIO;invalidarCacheMapa();estatisticas.caixasDestruidas++;ajustarPontos(PONTOS_POR_CAIXA,marioAliado.dono);acertou=true;}
+        for(auto& i:inimigos)if(i.vivo && hypot(a.tx-i.visualC-.5f,a.ty-i.visualL-.5f)<.95f){matarInimigo(i,pontos,marioAliado.dono);acertou=true;}
+        if(marioAliado.dono>=0 && estado==JOGANDO && jogadorEmCampo(2-marioAliado.dono)){
+            int rival=1-marioAliado.dono;float rl=rival==0?jogadorVisualL:jogador2VisualL,rc=rival==0?jogadorVisualC:jogador2VisualC;
+            if(hypot(a.tx-rc-.5f,a.ty-rl-.5f)<.95f){derrubarJogador(rival+1);ajustarPontos(PONTOS_POR_INIMIGO,marioAliado.dono);acertou=true;}
+        }
         for(auto& b:bombas)if(b.ativa && iguais(b.posicao,p)){b.tempoMs=0;acertou=true;}
         if(celulaBoss(p.linha,p.coluna)){
-            boss.vida=max(0,boss.vida-3);boss.imunidadeMs=IMUNIDADE_BOSS_MS;acertou=true;pontos+=50;
-            if(boss.vida==0){boss.vivo=false;bossConcluido=true;pontos+=PONTOS_POR_BOSS;colocarPortal();}
+            boss.vida=max(0,boss.vida-3);boss.imunidadeMs=IMUNIDADE_BOSS_MS;reagirDanoHornet();acertou=true;
+            if(boss.vida==0)concluirLutaBoss(marioAliado.dono);
         }
-        if(acertou)pontos+=25;
+        (void)acertou; // Pontos somente por conquistas, nao por acertos isolados.
     }
     macasMario.erase(remove_if(macasMario.begin(),macasMario.end(),[](const MacaMario& a){return a.idade>=a.duracao;}),macasMario.end());
+}
+
+// Casa livre e longe de inimigos, bombas e ataques do chefe para renascer.
+Posicao posicaoParaRenascer(int numero) {
+    Posicao outro = numero == 1 ? jogador2 : jogador;
+    for (int distanciaMinima = 4; distanciaMinima >= 0; distanciaMinima--) {
+        vector<Posicao> livres;
+        for (int l = 1; l < LINHAS - 1; l++)
+            for (int c = 1; c < COLUNAS - 1; c++) {
+                Posicao p{l, c};
+                if (mapa[l][c] != VAZIO || bombaEm(p) || perigoDaBomba(p) || perigoDoBoss(p) || bloqueadoBoss(p)) continue;
+                if (jogadorEmCampo(3-numero) && iguais(p, outro)) continue;
+                bool perto = false;
+                for (const Inimigo& i : inimigos)
+                    if (i.vivo && abs(i.posicao.linha-l) + abs(i.posicao.coluna-c) < distanciaMinima) perto = true;
+                if (!perto) livres.push_back(p);
+            }
+        if (!livres.empty()) {
+            uniform_int_distribution<int> sorteio(0, static_cast<int>(livres.size()) - 1);
+            return livres[sorteio(gerador)];
+        }
+    }
+    return numero == 1 ? jogador : jogador2;
+}
+// Depois da animacao de queda, quem ainda tem vidas volta a arena.
+void atualizarVidasJogadores(int tempoMs) {
+    if (!segundoJogadorAtivo()) return;
+    for (int i = 0; i < 2; i++) {
+        imunidadeJogadorMs[i] = max(0, imunidadeJogadorMs[i] - tempoMs);
+        if (!jogadorCaido[i] || vidasJogador[i] == 0 || tempoQuedaMs[i] < DURACAO_MORTE_MS) continue;
+        Posicao p = posicaoParaRenascer(i+1);
+        if (i == 0) { jogador = p; jogadorVisualL = float(p.linha); jogadorVisualC = float(p.coluna); direcaoJogador = {0,1}; tempoMovimentoMs = 0; }
+        else { jogador2 = p; jogador2VisualL = float(p.linha); jogador2VisualC = float(p.coluna); direcaoJogador2 = {0,1}; tempoMovimentoMs2 = 0; }
+        jogadorCaido[i] = false;
+        imunidadeJogadorMs[i] = IMUNIDADE_RENASCER_MS;
+    }
 }
 
 void atualizarBot() {
@@ -1482,7 +2372,8 @@ void atualizarBot() {
     // entre "quando o bot decide" e "quando o jogo deixa mover", que causava
     // o personagem parecendo travar/bater em paredes no modo automatico.
     if (modo != AUTOMATICO || estado != JOGANDO || tempoMovimentoMs > 0) return;
-    if (!bombas.empty() || perigoDoBoss(jogador)) {
+    // Bombas de inimigos so importam quando ameacam o bot; a dele, sempre.
+    if (bombasDoDono(0) > 0 || perigoDaBomba(jogador) || perigoDoBoss(jogador)) {
         if (!perigoDaBomba(jogador) && !perigoDoBoss(jogador)) return;
         Posicao destino = proximoPassoParaFuga();
         if (!iguais(destino, jogador)) moverJogador(destino.linha - jogador.linha, destino.coluna - jogador.coluna);
@@ -1498,6 +2389,7 @@ void atualizarBot() {
         return;
     }
     Posicao destino = proximoPassoDoBot();
+    if (perigoDaBomba(destino)) return; // espera a bomba do inimigo explodir
     if (!iguais(destino, jogador)) moverJogador(destino.linha - jogador.linha, destino.coluna - jogador.coluna);
 }
 
@@ -1506,15 +2398,17 @@ void processarMovimentoContinuo() {
     // do WM_KEYDOWN, que segue o delay/taxa de repeticao configurados no
     // Windows e causa a sensacao de input lag/travamento ao segurar uma tecla.
     if (modo != MANUAL) return;
-    // Com o jogador 2 ativo, as setas viram exclusividade dele - senao as
-    // duas leituras reagiriam a mesma tecla e os dois andariam juntos.
+    // Teclado dividido (P1 WASD, P2 setas) so quando os dois usam o teclado;
+    // senao as duas leituras reagiriam a mesma tecla e os dois andariam juntos.
+    // Quem esta sozinho no teclado usa WASD e setas.
     auto moverPorTeclas=[&](bool p2) {
         struct Entrada { int tecla,dl,dc; };
         vector<Entrada> entradas;
         const Entrada letras[]={{'W',-1,0},{'S',1,0},{'A',0,-1},{'D',0,1}};
         const Entrada setas[]={{VK_UP,-1,0},{VK_DOWN,1,0},{VK_LEFT,0,-1},{VK_RIGHT,0,1}};
-        if(!p2) for(auto e:letras) if(teclaPressionada[e.tecla]) entradas.push_back(e);
-        if(p2 || !doisJogadores) for(auto e:setas) if(teclaPressionada[e.tecla]) entradas.push_back(e);
+        int dono=teclaDoJogador(p2);
+        if(dono&TECLAS_WASD) for(auto e:letras) if(teclaPressionada[e.tecla]) entradas.push_back(e);
+        if(dono&TECLAS_SETAS) for(auto e:setas) if(teclaPressionada[e.tecla]) entradas.push_back(e);
         stable_sort(entradas.begin(),entradas.end(),[](const Entrada& a,const Entrada& b){return ordemTecla[a.tecla]>ordemTecla[b.tecla];});
         for(auto e:entradas) {
             Posicao antes=p2 ? jogador2 : jogador;
@@ -1522,13 +2416,28 @@ void processarMovimentoContinuo() {
             if(!iguais(antes,p2 ? jogador2 : jogador) || estado!=JOGANDO) break;
         }
     };
+    // O joystick usa o mesmo moverJogador/colocarBomba do teclado: mesmo
+    // ritmo, colisao, animacao, bomba e itens.
+    bool bombaNova=entradaControle.bomba && !botaoBombaControleAnterior;
+    botaoBombaControleAnterior=entradaControle.bomba;
     moverPorTeclas(false);
-    if(segundoJogadorAtivo()) moverPorTeclas(true);
+    if(controleNoJogador(1)){
+        if(entradaControle.dl || entradaControle.dc) moverJogador(entradaControle.dl,entradaControle.dc);
+        if(bombaNova) colocarBomba();
+    }
+    if(segundoJogadorAtivo()){
+        moverPorTeclas(true);
+        if(controleNoJogador(2)){
+            if(entradaControle.dl || entradaControle.dc) moverJogador2(entradaControle.dl,entradaControle.dc);
+            if(bombaNova) colocarBomba2();
+        }
+    }
 }
 
 void atualizar(int tempoMs) {
     relogioAnimacaoMs += tempoMs;
     if (modo == MENU) return;
+    for (int i = 0; i < 2; i++) if (jogadorCaido[i]) tempoQuedaMs[i] += tempoMs;
     if (estado != JOGANDO) {
         tempoFimMs += tempoMs;
         if (modo == AUTOMATICO && tempoFimMs >= 1400) {
@@ -1540,10 +2449,12 @@ void atualizar(int tempoMs) {
     tempoPartidaMs += tempoMs;
     tempoMovimentoMs = max(0, tempoMovimentoMs - tempoMs);
     if (doisJogadores) tempoMovimentoMs2 = max(0, tempoMovimentoMs2 - tempoMs);
+    atualizarVidasJogadores(tempoMs);
     processarMovimentoContinuo();
     if (modo == AUTOMATICO) atualizarBot();
     atualizarBombas(tempoMs);
     moverInimigos(tempoMs);
+    soltarBombasInimigos(tempoMs);
     atualizarBoss(tempoMs);
     atualizarMario(tempoMs);
     // Avanca os corpos ate os destinos reservados antes de verificar contato.
@@ -1565,11 +2476,11 @@ void atualizar(int tempoMs) {
     atingirPersonagens(inimigos,estado,pontos);
     atingirBoss();
     verificarContatoJogadores();
-    if(estado==JOGANDO && visualNoDestino(jogadorVisualL,jogadorVisualC,jogador)) {
+    if(estado==JOGANDO && jogadorEmCampo(1) && visualNoDestino(jogadorVisualL,jogadorVisualC,jogador)) {
         coletarItens(); avancarOuVencerSePortal(jogador);
     }
-    if(estado==JOGANDO && segundoJogadorAtivo() && visualNoDestino(jogador2VisualL,jogador2VisualC,jogador2)) {
-        coletarItensEm(jogador2); avancarOuVencerSePortal(jogador2);
+    if(estado==JOGANDO && jogadorEmCampo(2) && visualNoDestino(jogador2VisualL,jogador2VisualC,jogador2)) {
+        coletarItensEm(jogador2, 1); avancarOuVencerSePortal(jogador2, 1);
     }
     verificarVitoria();
     // Funil unico pra descontar vida: roda exatamente uma vez por morte (no
@@ -1586,13 +2497,26 @@ void atualizar(int tempoMs) {
     // uma vida e tentar de novo, nao e o fim da partida.
     if ((estado == FIM_DE_JOGO || estado == VITORIA) && modo == MANUAL && !registroSalvo) {
         registroSalvo = true;
-        RegistroPontuacao registro;
-        registro.data = dataAtual();
-        registro.jogador = nomeJogador.empty() ? "Jogador" : wparaStr(nomeJogador);
-        registro.pontuacao = pontos;
-        registro.bombas = estatisticas.bombasUsadas;
-        registro.movimentos = estatisticas.movimentos;
-        salvarRegistroPartida(registro);
+        auto salvar = [](const wstring& nome, const wstring& padrao, int pontuacao, int bombasUsadas, int movimentos) {
+            RegistroPontuacao registro;
+            registro.data = dataAtual();
+            registro.jogador = wparaStr(nome.empty() ? padrao : nome);
+            registro.pontuacao = pontuacao;
+            registro.bombas = bombasUsadas;
+            registro.movimentos = movimentos;
+            return salvarRegistroPartida(registro);
+        };
+        if (segundoJogadorAtivo()) {
+            // Dois nomes no ranking: no modo amigos os dois levam os pontos do
+            // time; no modo inimigos, cada um leva os seus.
+            bool ok1 = salvar(nomeJogador, L"Jogador 1", modoRivais ? pontosJogador[0] : pontos,
+                              estatisticas.bombasJogador[0], estatisticas.movimentosJogador[0]);
+            bool ok2 = salvar(nomeJogador2, L"Jogador 2", modoRivais ? pontosJogador[1] : pontos,
+                              estatisticas.bombasJogador[1], estatisticas.movimentosJogador[1]);
+            erroSalvarRanking = !ok1 || !ok2;
+        } else {
+            erroSalvarRanking = !salvar(nomeJogador, L"Jogador", pontos, estatisticas.bombasUsadas, estatisticas.movimentos);
+        }
     }
 }
 
@@ -1631,6 +2555,13 @@ unique_ptr<Gdiplus::Bitmap> recortarEmBitmapCompacto(Gdiplus::Image* origem, int
     Gdiplus::Graphics g(destino.get());
     g.DrawImage(origem, Gdiplus::Rect(0, 0, sw, sh), sx, sy, sw, sh, Gdiplus::UnitPixel);
     return destino;
+}
+unique_ptr<Gdiplus::Bitmap> apararMargensTransparentes(unique_ptr<Gdiplus::Bitmap> quadro){
+    int w=int(quadro->GetWidth()),h=int(quadro->GetHeight()),x0=w,y0=h,x1=-1,y1=-1;
+    for(int y=0;y<h;++y)for(int x=0;x<w;++x){Gdiplus::Color cor;quadro->GetPixel(x,y,&cor);
+        if(cor.GetA()){x0=min(x0,x);y0=min(y0,y);x1=max(x1,x);y1=max(y1,y);}}
+    if(x1<0)return quadro;
+    return recortarEmBitmapCompacto(quadro.get(),x0,y0,x1-x0+1,y1-y0+1);
 }
 
 void prepararTemaFase2Compacto() {
@@ -1699,6 +2630,29 @@ void carregarAssets() {
         g.FillRectangle(&vermelho,3,4,3,8);g.FillRectangle(&vermelho,7,4,2,8);g.FillRectangle(&vermelho,2,6,8,5);g.FillRectangle(&vermelho,4,11,4,2);g.FillRectangle(&luz,3,5,2,3);}
 
     spriteArenasEstudo = carregarSprite(L"arenas_estudo.png");
+    // Pedra clara com um leve tom de musgo: separa os pilares do chao verde.
+    spritePedraSelva=recortarEmBitmapCompacto(spriteArenasEstudo.get(),5*46,46,46,46);
+    for(int y=0;y<46;++y)for(int x=0;x<46;++x){
+        Gdiplus::Color cor;spritePedraSelva->GetPixel(x,y,&cor);
+        int luz=(cor.GetR()*30+cor.GetG()*59+cor.GetB()*11)/100;
+        spritePedraSelva->SetPixel(x,y,Gdiplus::Color(cor.GetA(),min(235,65+luz*3/4),min(240,72+luz*3/4),min(225,60+luz*3/4)));
+    }
+    {Gdiplus::Graphics pedra(spritePedraSelva.get());
+        Gdiplus::Pen luz(Gdiplus::Color(255,222,229,202),2),sombra(Gdiplus::Color(255,48,62,42),3);
+        pedra.DrawRectangle(&sombra,1,1,43,43);
+        pedra.DrawLine(&luz,3,3,42,3);pedra.DrawLine(&luz,3,3,3,42);}
+    // Madeira em tons quentes por toda a casa, inclusive as margens verdes
+    // do recorte original. Mantem os veios, mas distingue das paredes da selva.
+    spriteCaixaSelva=recortarEmBitmapCompacto(spriteArenasEstudo.get(),5*46,92,46,46);
+    for(int y=0;y<46;++y)for(int x=0;x<46;++x){
+        Gdiplus::Color cor;spriteCaixaSelva->GetPixel(x,y,&cor);
+        int luz=(cor.GetR()*30+cor.GetG()*59+cor.GetB()*11)/100;
+        spriteCaixaSelva->SetPixel(x,y,Gdiplus::Color(cor.GetA(),min(255,55+luz),min(210,22+luz*3/4),min(115,10+luz/3)));
+    }
+    {Gdiplus::Graphics caixa(spriteCaixaSelva.get());
+        Gdiplus::Pen luz(Gdiplus::Color(255,255,205,115),2),sombra(Gdiplus::Color(255,83,40,15),3);
+        caixa.DrawRectangle(&sombra,1,1,43,43);
+        caixa.DrawLine(&luz,3,3,42,3);caixa.DrawLine(&luz,3,3,3,42);}
     const wchar_t* arquivos[] = {L"branco", L"preto", L"azul", L"vermelho"};
     for (int i=0;i<4;++i) {
         personagens[i] = carregarSprite(wstring(L"personagem_")+arquivos[i]+L".png");
@@ -1719,6 +2673,26 @@ void carregarAssets() {
     spriteBombaAnimada = carregarSprite(L"bomba_animada.png");
     spriteExplosaoAnimada = carregarSprite(L"explosao_animada.png");
     spriteInimigoDirecional = carregarSprite(L"inimigo_direcional.png");
+    spriteInimigoVerde=recortarEmBitmapCompacto(spriteInimigoDirecional.get(),0,0,
+        int(spriteInimigoDirecional->GetWidth()),int(spriteInimigoDirecional->GetHeight()));
+    for(UINT y=0;y<spriteInimigoVerde->GetHeight();++y)for(UINT x=0;x<spriteInimigoVerde->GetWidth();++x){
+        Gdiplus::Color cor;spriteInimigoVerde->GetPixel(x,y,&cor);
+        if(cor.GetA() && cor.GetR()>cor.GetG()*1.25f && cor.GetR()>cor.GetB()*1.2f){
+            int luz=(cor.GetR()*30+cor.GetG()*59+cor.GetB()*11)/100;
+            spriteInimigoVerde->SetPixel(x,y,Gdiplus::Color(cor.GetA(),20+luz/4,min(255,60+luz),20+luz/3));
+        }
+    }
+    atlasHornet=carregarSprite(L"hornet_animacoes.png");
+    atlasBowser=carregarSprite(L"bowser_animacoes.png");
+    spriteArenasNovas=carregarSprite(L"arenas_novas.png");
+    spriteArenaCongo=carregarSprite(L"arena_congo.png");
+    int agulha=ANIM_HORNET[27].inicio,fio=ANIM_HORNET[21].inicio;
+    for(int i=0;i<3;++i)spritesAgulhaBoss[i]=apararMargensTransparentes(recortarEmBitmapCompacto(atlasHornet.get(),(agulha+i)%16*160,(agulha+i)/16*160,160,160));
+    for(int i=0;i<5;++i)spritesFioBoss[i]=recortarEmBitmapCompacto(atlasHornet.get(),(fio+i)%16*160,(fio+i)/16*160,160,160);
+    int linhaFio=ANIM_HORNET[28].inicio,efeito=ANIM_HORNET[17].inicio;
+    for(int i=0;i<3;++i)fiosAgulhaBoss[i]=recortarEmBitmapCompacto(atlasHornet.get(),(linhaFio+i)%16*160,(linhaFio+i)/16*160,160,160);
+    for(int i=0;i<5;++i)efeitosDashHornet[i]=recortarEmBitmapCompacto(atlasHornet.get(),(efeito+i)%16*160,(efeito+i)/16*160,160,160);
+    for(int i=0;i<4;++i)spritesFogoBowser[i]=recortarEmBitmapCompacto(spriteFogoBoss.get(),5+i*40,4,31,55);
     spriteTemaFase1 = carregarSprite(L"SNES - Super Bomberman - Story Mode Stages - Stage 2-5.png");
     spriteTemaFase3 = carregarSprite(L"SNES - Super Bomberman - Story Mode Stages - Stage 6-3.png");
     prepararTemaFase2Compacto();
@@ -1798,6 +2772,16 @@ void liberarBuffer() {
 }
 
 void liberarAssets() {
+    spriteCaixaSelva.reset();
+    spritePedraSelva.reset();
+    for(auto& cache:cacheQuadrosBoss)cache.clear();
+    atlasHornet.reset();atlasBowser.reset();spriteArenasNovas.reset();
+    spriteArenaCongo.reset();
+    for(auto& s:spritesAgulhaBoss)s.reset();
+    for(auto& s:spritesFioBoss)s.reset();
+    for(auto& s:spritesFogoBowser)s.reset();
+    for(auto& s:fiosAgulhaBoss)s.reset();
+    for(auto& s:efeitosDashHornet)s.reset();
     spriteArenasEstudo.reset();
     for(int i=0;i<4;++i) { personagens[i].reset(); posesVitoria[i].reset(); posesDerrota[i].reset(); }
     spriteItens.reset();
@@ -1816,6 +2800,7 @@ void liberarAssets() {
     spriteBombaAnimada.reset();
     spriteExplosaoAnimada.reset();
     spriteInimigoDirecional.reset();
+    spriteInimigoVerde.reset();
     spriteTemaFase1.reset();
     spriteTemaFase2Chao.reset();
     spriteTemaFase2Parede.reset();
@@ -1852,7 +2837,7 @@ Gdiplus::Font* obterFonte(int tamanhoPx) {
 }
 
 void desenharTexto(Gdiplus::Graphics& g, const wstring& texto, float x, float y,
-                   float tamanho, Gdiplus::Color cor, bool centralizado = false) {
+                   float tamanho, Gdiplus::Color cor = Gdiplus::Color(255,220,230,240), bool centralizado = false) {
     Gdiplus::Font* fonte = obterFonte(px(static_cast<int>(tamanho)));
     Gdiplus::SolidBrush pincel(cor);
     Gdiplus::StringFormat formato;
@@ -1994,9 +2979,14 @@ struct TemaFase {
 
 TemaFase temaDaFase(int fase) {
     fase = max(1,min(TOTAL_FASES,fase));
+    if(fase==7){auto* f=spriteArenaCongo.get();
+        return {f,Gdiplus::Rect(0,0,46,46),f,Gdiplus::Rect(0,46,46,46),f,Gdiplus::Rect(0,92,46,46)};}
+    if(fase>=9){auto* f=spriteArenasNovas.get();int x=(fase-9)*46;
+        return {f,Gdiplus::Rect(x,0,46,46),f,Gdiplus::Rect(x,46,46,46),f,Gdiplus::Rect(x,92,46,46)};}
     if (fase>3) {
         auto* f=spriteArenasEstudo.get();
         int x=INDICES_ATLAS_FASES[fase-1]*46;
+        if(fase==6)return {f,Gdiplus::Rect(x,0,46,46),spritePedraSelva.get(),Gdiplus::Rect(0,0,46,46),spriteCaixaSelva.get(),Gdiplus::Rect(0,0,46,46)};
         return {f,Gdiplus::Rect(x,0,46,46),f,Gdiplus::Rect(x,46,46,46),f,Gdiplus::Rect(x,92,46,46)};
     }
     if (fase <= 1) {
@@ -2030,7 +3020,15 @@ void desenharTerrenoCelula(Gdiplus::Graphics& g, int l, int c) {
     if (tipo == PAREDE_SOLIDA) { folhaTextura = tema.paredeFolha; origemTextura = tema.parede; }
     else if (tipo == PAREDE_FRAGIL || tipo == PAREDE_BONUS) { folhaTextura = tema.caixaFolha; origemTextura = tema.caixa; }
     else { folhaTextura = tema.chaoFolha; origemTextura = tema.chao; } // VAZIO e PORTAL usam o chao
+    if((tipo==VAZIO || tipo==PORTAL) && faseAtual>=9){
+        bool variante=faseAtual==10?(l%4!=2 && c%4!=3):(l+c)%5==0;
+        if(variante)origemTextura.Y=138;
+    }
     bool temTextura = folhaTextura != nullptr;
+    if((tipo==VAZIO || tipo==PORTAL) && faseAtual==7){
+        int variante=(l*3+c*7)%5;
+        if(variante<2)origemTextura.Y=(3+variante)*46;
+    }
 
     if (temTextura) {
         g.DrawImage(folhaTextura, Gdiplus::Rect(x, y, lado, lado), origemTextura.X, origemTextura.Y,
@@ -2095,9 +3093,101 @@ void desenharExplosaoOverlay(Gdiplus::Graphics& g) {
 }
 
 // Quadros recortados das folhas existentes, animados durante voo e impacto.
-Gdiplus::Bitmap* quadroPoderBoss(PoderBoss poder,int quadro,int arma=0){
+Gdiplus::Image* quadroPoderBoss(PoderBoss poder,int quadro,int arma=0){
+    if(poder==AGULHA)return spritesAgulhaBoss[quadro%3].get();
+    if(poder==FIO)return spritesFioBoss[quadro%5].get();
+    if(poder==FOGO_BOWSER)return spritesFogoBowser[quadro%4].get();
+    if(poder==GOLPE_BOWSER)return impactoBoss[quadro%4].get();
     if(poder==MACHADO)return arma==1?facoesBoss[quadro%5].get():spriteMachadoBoss.get();
     return poder==ENERGIA?energiaBoss[quadro%4].get():venenoBoss[quadro%4].get();
+}
+// Escolha de poses originais por acao, sem repetir um retrato estatico.
+int linhaPoseBoss(){
+    if(indiceBoss()==2){
+        if(boss.morteMs>0)return 38;
+        if(boss.imunidadeMs>450 && (boss.movendo || hornetNoAr()))return 36;
+        switch(boss.etapaHornet){
+            case H_CORRIDA:return 4;
+            case H_PREP_AGULHA:return boss.tempoEtapaHornetMs>150?23:24;
+            case H_LANCAR:case H_VOO_AGULHA:return 25;
+            case H_RECOLHER:return 26;
+            case H_PREP_DASH:return boss.tempoEtapaHornetMs>200?9:10;
+            case H_DASH:case H_RECUP_DASH:return 11;
+            case H_PREP_SALTO:return 5;
+            case H_SALTO:return 6;
+            case H_PREP_GIRO:return 19;
+            case H_GIRO:return 20;
+            case H_POUSO:return 7;
+            case H_PREP_AEREO:return 15;
+            case H_AEREO:case H_RECUP_AEREO:return 16;
+            case H_GUARDA:return 31;
+            case H_CONTRA:case H_RECUP_CONTRA:return 32;
+            case H_DANO:case H_RECUP_DANO:return 37;
+            default:return boss.relogioPoseMs<650?0:3;
+        }
+    }
+    if(boss.morteMs>0)return 38+min(3,(1050-boss.morteMs)/270);
+    if(boss.imunidadeMs>450)return 39;
+    if(boss.investindo)return boss.avisoInvestidaMs>0?54:55;
+    if(boss.acaoEspecial==4)return boss.tempoEspecialMs>1000?48:boss.tempoEspecialMs>750?49:boss.tempoEspecialMs>400?50:boss.tempoEspecialMs>150?51:47;
+    if(boss.acaoEspecial==1)return boss.tempoEspecialMs>900?45:boss.tempoEspecialMs>350?14:47;
+    if(boss.acaoEspecial==3)return boss.tempoEspecialMs>1450?45:boss.tempoEspecialMs>400?55:33;
+    if(boss.movendo)return boss.destino.linha!=boss.posicao.linha?(boss.destino.linha>boss.posicao.linha?57:56):16;
+    return 0;
+}
+int quadroAnimacaoBoss(){
+    int linha=linhaPoseBoss();const auto& a=indiceBoss()==2?ANIM_HORNET[linha]:ANIM_BOWSER[linha];
+    if(boss.morteMs>0){int t=1050-boss.morteMs;
+        return a.inicio+min(a.quantidade-1,(indiceBoss()==2?t:t%270)/145);}
+    if(indiceBoss()==2){
+        int t=boss.duracaoEtapaHornetMs-boss.tempoEtapaHornetMs,d=max(1,boss.duracaoEtapaHornetMs);
+        int primeiro=0,n=a.quantidade;
+        switch(boss.etapaHornet){
+            case H_IDLE:case H_CORRIDA:return a.inicio+(boss.relogioPoseMs/95)%n;
+            case H_VOO_AGULHA:return a.inicio+n-1;
+            case H_DASH:case H_AEREO:return a.inicio+(boss.relogioPoseMs/90)%2;
+            case H_RECUP_DASH:case H_RECUP_AEREO:primeiro=2;n-=2;break;
+            case H_RECUP_CONTRA:primeiro=n-2;n=2;break;
+            case H_RECUP_DANO:return a.inicio+(t<d/2?1:0);
+            case H_PREP_AGULHA:t=boss.tempoEtapaHornetMs>150?750-boss.tempoEtapaHornetMs:150-boss.tempoEtapaHornetMs;d=boss.tempoEtapaHornetMs>150?600:150;break;
+            case H_PREP_DASH:t=boss.tempoEtapaHornetMs>200?1000-boss.tempoEtapaHornetMs:200-boss.tempoEtapaHornetMs;d=boss.tempoEtapaHornetMs>200?800:200;break;
+            default:break;
+        }
+        return a.inicio+primeiro+min(n-1,max(0,t)*n/d);
+    }
+    int tempo=boss.morteMs>0?1050-boss.morteMs:boss.relogioPoseMs;
+    bool unica=boss.morteMs>0;int duracao=80*a.quantidade;
+    if(boss.avisoInvestidaMs>0){tempo=1000-boss.avisoInvestidaMs;duracao=1000;unica=true;}
+    else if(boss.acaoEspecial==1){
+        int corte=indiceBoss()==2?400:350;
+        int inicio=boss.tempoEspecialMs>900?1500:boss.tempoEspecialMs>corte?900:corte;
+        int fim=boss.tempoEspecialMs>900?900:boss.tempoEspecialMs>corte?corte:0;
+        tempo=inicio-boss.tempoEspecialMs;duracao=inicio-fim;unica=true;
+    }else if(boss.acaoEspecial==3){
+        int inicio=boss.tempoEspecialMs>1450?1800:indiceBoss()==4?1450:boss.tempoEspecialMs>650?1450:boss.tempoEspecialMs>400?650:boss.tempoEspecialMs>150?400:150;
+        int fim=boss.tempoEspecialMs>1450?1450:indiceBoss()==4?400:boss.tempoEspecialMs>650?650:boss.tempoEspecialMs>400?400:boss.tempoEspecialMs>150?150:0;
+        tempo=inicio-boss.tempoEspecialMs;duracao=max(1,inicio-fim);unica=true;
+    }else if(boss.acaoEspecial==4){
+        int inicio=boss.tempoEspecialMs>1000?1500:boss.tempoEspecialMs>750?1000:boss.tempoEspecialMs>400?750:boss.tempoEspecialMs>150?400:150;
+        int fim=boss.tempoEspecialMs>1000?1000:boss.tempoEspecialMs>750?750:boss.tempoEspecialMs>400?400:boss.tempoEspecialMs>150?150:0;
+        tempo=inicio-boss.tempoEspecialMs;duracao=inicio-fim;unica=true;
+    }
+    if(indiceBoss()==4 && linha==33)return a.inicio+2+min(3,max(0,(400-boss.tempoEspecialMs)/95));
+    return a.inicio+(unica?min(a.quantidade-1,max(0,tempo)*a.quantidade/max(1,duracao)):(tempo/95)%a.quantidade);
+}
+void desenharBossAnimado(Gdiplus::Graphics& g,float x,float y,float tamanho,bool retrato=false){
+    int quadro=quadroAnimacaoBoss();auto salvo=g.Save();
+    // Recorta uma vez por pose; evita reescalar a folha inteira a cada quadro.
+    auto& cache=cacheQuadrosBoss[indiceBoss()==2?0:1];
+    if(!cache.count(quadro))cache[quadro]=recortarEmBitmapCompacto(imagemBossAtual(),quadro%16*160,quadro/16*160,160,160);
+    g.TranslateTransform(px(x+(boss.olhandoDireita?tamanho:0)),px(y));
+    if(boss.olhandoDireita)g.ScaleTransform(-1,1);
+    g.DrawImage(cache[quadro].get(),Gdiplus::RectF(0,0,px(tamanho),px(tamanho)),0.f,0.f,160.f,160.f,Gdiplus::UnitPixel);
+    g.Restore(salvo);
+    if(!retrato && indiceBoss()==2 && (boss.etapaHornet==H_PREP_GIRO || boss.etapaHornet==H_GUARDA))
+        desenharTexto(g,boss.etapaHornet==H_GUARDA?L"CONTRA-ATAQUE!":L"FIOS!",int(x),int(y)-15,12,Gdiplus::Color(255,255,185,80));
+    else if(!retrato && indiceBoss()==4 && boss.acaoEspecial==3 && boss.tempoEspecialMs>400)
+        desenharTexto(g,L"SALTO!",int(x),int(y)-15,12,Gdiplus::Color(255,255,185,80));
 }
 void desenharSpritePoder(Gdiplus::Graphics& g,Gdiplus::Image* sprite,float x,float y,float lado,float angulo=0.f){
     if(!sprite)return;
@@ -2110,9 +3200,17 @@ void desenharSpritePoder(Gdiplus::Graphics& g,Gdiplus::Image* sprite,float x,flo
 }
 void desenharPerigoBossOverlay(Gdiplus::Graphics& g) {
     if(!boss.vivo)return;
+    if(indiceBoss()==2){
+        float x=(boss.visualC+1)*TAMANHO_CELULA,y=ALTURA_CABECALHO+(boss.visualL+1)*TAMANHO_CELULA-boss.alturaHornet;
+        int q=(boss.relogioPoseMs/70)%5;
+        if(boss.etapaHornet==H_DASH || boss.etapaHornet==H_AEREO)
+            desenharSpritePoder(g,efeitosDashHornet[q].get(),x,y,126,boss.olhandoDireita?180.f:0.f);
+        if(boss.etapaHornet==H_GIRO)
+            desenharSpritePoder(g,spritesFioBoss[q].get(),x,y,124,boss.relogioPoseMs*.12f);
+    }
     if(boss.investindo){
-        float x=(boss.visualC+1.5f)*TAMANHO_CELULA,y=ALTURA_CABECALHO+(boss.visualL+1)*TAMANHO_CELULA;
-        float tx=(boss.destino.coluna+1.5f)*TAMANHO_CELULA,ty=ALTURA_CABECALHO+(boss.destino.linha+1)*TAMANHO_CELULA;
+        float x=(boss.visualC+larguraBoss()/2.f)*TAMANHO_CELULA,y=ALTURA_CABECALHO+(boss.visualL+1)*TAMANHO_CELULA;
+        float tx=(boss.destino.coluna+larguraBoss()/2.f)*TAMANHO_CELULA,ty=ALTURA_CABECALHO+(boss.destino.linha+1)*TAMANHO_CELULA;
         if(boss.avisoInvestidaMs>0){
             Gdiplus::Pen trilha(Gdiplus::Color(180,255,150,75),px(3.f));trilha.SetDashStyle(Gdiplus::DashStyleDash);
             g.DrawLine(&trilha,px(x),px(y),px(tx),px(ty));
@@ -2141,6 +3239,15 @@ void desenharPerigoBossOverlay(Gdiplus::Graphics& g) {
         float x=p.c*TAMANHO_CELULA,y=ALTURA_CABECALHO+p.l*TAMANHO_CELULA;
         int q=int(p.idade*14);
         float angulo=p.poder==MACHADO?(p.arma==1?((q%10)>=5?180.f:0.f):p.idade*720):atan2(p.vl,p.vc)*180/3.1415926f;
+        if(p.poder==AGULHA){
+            float sx=p.origemC*TAMANHO_CELULA,sy=ALTURA_CABECALHO+p.origemL*TAMANHO_CELULA;
+            float tamanho=hypot(x-sx,y-sy);
+            if(tamanho>3){Gdiplus::Pen sombraFio(Gdiplus::Color(180,12,12,20),px(4.f));g.DrawLine(&sombraFio,px(sx),px(sy),px(x),px(y));
+                Gdiplus::Pen fio(Gdiplus::Color(210,240,235,245),px(2.f));g.DrawLine(&fio,px(sx),px(sy),px(x),px(y));
+                auto salvo=g.Save();g.TranslateTransform(px(sx),px(sy));g.RotateTransform(atan2(y-sy,x-sx)*180/3.1415926f);
+                g.DrawImage(fiosAgulhaBoss[q%3].get(),Gdiplus::RectF(0,px(-12.f),px(tamanho),px(24.f)),0.f,60.f,160.f,40.f,Gdiplus::UnitPixel);g.Restore(salvo);}
+            angulo+=180;
+        }
         if(p.avisoMs>0){
             float pulso=1.f+.12f*sin(relogioAnimacaoMs*.02f);
             desenharSpritePoder(g,quadroPoderBoss(p.poder,0,p.arma),x,y-28,32*pulso,angulo);
@@ -2151,7 +3258,7 @@ void desenharPerigoBossOverlay(Gdiplus::Graphics& g) {
         if(p.poder!=MACHADO){
             for(int i=3;i>=1;--i)desenharSpritePoder(g,quadroPoderBoss(p.poder,(q+i)%4),x-p.vc*i*4,y-p.vl*i*4,18.f-i*2,angulo);
         }
-        desenharSpritePoder(g,quadroPoderBoss(p.poder,q,p.arma),x,y,p.poder==MACHADO?46.f:38.f,angulo);
+        desenharSpritePoder(g,quadroPoderBoss(p.poder,q,p.arma),x,y,p.poder==AGULHA?56.f:p.poder==MACHADO?46.f:38.f,angulo);
     }
     for(const auto& i:impactosBoss){
         int q=min(3,int(i.idade*10));float lado=26+sin(i.idade/.4f*3.1415926f)*30;
@@ -2214,9 +3321,16 @@ void desenharJogadorAtual(Gdiplus::Graphics& g, int indice) {
     float c=indice==0 ? jogadorVisualC : jogador2VisualC;
     int skin=indice==0 ? personagemP1 : personagemP2;
     bool morto=(estado==DERROTA || estado==FIM_DE_JOGO) && (jogadoresAtingidos & (1<<indice));
+    // Com dois jogadores, quem caiu toca a queda no proprio relogio e some.
+    int tempoQueda=tempoFimMs;
+    if (jogadorCaido[indice]) {
+        if (tempoQuedaMs[indice] >= DURACAO_MORTE_MS) return;
+        morto=true; tempoQueda=tempoQuedaMs[indice];
+    }
+    if (!morto && imunidadeJogadorMs[indice] > 0 && (imunidadeJogadorMs[indice]/120)%2==0) return; // pisca ao renascer
     if (morto && posesDerrota[skin]) {
         auto* folha=posesDerrota[skin].get();
-        int quadro=min(static_cast<int>(folha->GetWidth())/16-1,tempoFimMs/130);
+        int quadro=min(static_cast<int>(folha->GetWidth())/16-1,tempoQueda/130);
         float altura=folha->GetHeight()*(68.f/24.f), largura=16*(68.f/24.f);
         float x=(c+.5f)*TAMANHO_CELULA-largura/2;
         float y=ALTURA_CABECALHO+(l+1)*TAMANHO_CELULA-3-altura;
@@ -2285,7 +3399,9 @@ void desenharMapa(Gdiplus::Graphics& g) {
             g.DrawImage(spriteBombaAnimada.get(), Gdiplus::RectF(x-lado/2, y-lado/2, lado, lado),
                         ((relogioAnimacaoMs / 125) % 4) * 16.f, 0.f, 16.f, 16.f, Gdiplus::UnitPixel);
         else desenharQuadroLinearNaCelula(g, nullptr, b.posicao.linha, b.posicao.coluna, 0, 16, L"BO");
-        Gdiplus::Pen arco(b.tempoMs < 800 && !b.relogio ? Gdiplus::Color(255,255,105,70) : Gdiplus::Color(255,98,235,199), px(2));
+        // Arco roxo = bomba de inimigo.
+        Gdiplus::Pen arco(b.tempoMs < 800 && !b.relogio ? Gdiplus::Color(255,255,105,70)
+                          : b.dono == DONO_INIMIGO ? Gdiplus::Color(255,200,110,255) : Gdiplus::Color(255,98,235,199), px(2));
         float progresso = b.relogio ? 1.f : static_cast<float>(b.tempoMs) / TEMPO_BOMBA_MS;
         g.DrawArc(&arco, x-px(23.f), y-px(23.f), px(46.f), px(46.f), -90.f, 360.f*progresso);
     }
@@ -2295,23 +3411,28 @@ void desenharMapa(Gdiplus::Graphics& g) {
     for(int i=0;i<static_cast<int>(inimigos.size());++i)
         if(inimigos[i].vivo) ordem.push_back({inimigos[i].visualL,1,i});
     if(marioAliado.ativo && marioAliado.hp>0)ordem.push_back({marioAliado.l,3,0});
-    if(boss.vivo) ordem.push_back({boss.visualL+1,2,0});
+    if(boss.vivo || boss.morteMs>0) ordem.push_back({boss.visualL+1,2,0});
     stable_sort(ordem.begin(),ordem.end(),[](const AtorDesenho& a,const AtorDesenho& b){return a.linha<b.linha;});
     for(const AtorDesenho& ator:ordem) {
         if(ator.tipo==0) desenharJogadorAtual(g,ator.indice);
         else if(ator.tipo==3)desenharMarioAliado(g);
         else if(ator.tipo==1) {
             const Inimigo& i=inimigos[ator.indice];
-            desenharQuadroNaCelula(g,spriteInimigoDirecional.get(),i.visualL,i.visualC,
+            desenharQuadroNaCelula(g,imagemInimigoAtual(),i.visualL,i.visualC,
                 linhaDaFolhaParaDirecao(i.direcao),i.quadroAnim,i.especial ? L"IN*" : L"IN");
         } else {
-            int x=static_cast<int>((boss.visualC+1.5f)*TAMANHO_CELULA-55);
+            int x=static_cast<int>((boss.visualC+larguraBoss()/2.f)*TAMANHO_CELULA-55);
             int y=static_cast<int>(ALTURA_CABECALHO+(boss.visualL+.6f)*TAMANHO_CELULA-70+sin(relogioAnimacaoMs*.003f)*5);
             if(boss.animAtaqueMs>0 && indiceBoss()!=3)y-=int(sin((700-boss.animAtaqueMs)/700.f*3.1415926f)*9);
             if(boss.avisoInvestidaMs>0)desenharTexto(g,L"INVESTIDA!",x-2,y-18,12,Gdiplus::Color(255,255,185,80));
             Gdiplus::SolidBrush sombra(Gdiplus::Color(80,0,0,0));
-            g.FillEllipse(&sombra,px(x+15),px(y+98),px(80),px(22));
-            desenharRecorte(g,imagemBossAtual(),0,0,imagemBossAtual()?imagemBossAtual()->GetWidth():1,imagemBossAtual()?imagemBossAtual()->GetHeight():1,x,y,110);
+            g.FillEllipse(&sombra,px(x+15),px(bossAnimado()?int(ALTURA_CABECALHO+(boss.visualL+2)*TAMANHO_CELULA-10):y+98),px(80),px(22));
+            if(bossAnimado()){
+                float salto=indiceBoss()==2?boss.alturaHornet:boss.acaoEspecial==3 && boss.tempoEspecialMs>400?sin((1800-boss.tempoEspecialMs)/1400.f*3.1415926f)*65:0;
+                float tamanho=indiceBoss()==2?134.f:158.f;
+                float centro=(boss.visualC+larguraBoss()/2.f)*TAMANHO_CELULA;
+                desenharBossAnimado(g,centro-tamanho/2,ALTURA_CABECALHO+(boss.visualL+2)*TAMANHO_CELULA-tamanho-salto,tamanho);
+            }else desenharRecorte(g,imagemBossAtual(),0,0,imagemBossAtual()?imagemBossAtual()->GetWidth():1,imagemBossAtual()?imagemBossAtual()->GetHeight():1,x,y,110);
             if(boss.imunidadeMs>200){Gdiplus::Pen dano(Gdiplus::Color(230,255,155,65),px(3.f));g.DrawEllipse(&dano,px(x),px(y),px(110),px(110));}
         }
     }
@@ -2319,33 +3440,77 @@ void desenharMapa(Gdiplus::Graphics& g) {
     desenharMacasMario(g);
 }
 
+void desenharVidasJogadores(Gdiplus::Graphics& g);
 void desenharHUD(Gdiplus::Graphics& g) {
     painel(g, 0, 0, LARGURA_JOGO, ALTURA_CABECALHO, Gdiplus::Color(255,11,16,28));
     painel(g, 0, 0, LARGURA_JOGO, 5, Gdiplus::Color(255,252,187,65));
     desenharTexto(g, L"BOMBER / UNIVALI", 22, 14, 30, Gdiplus::Color(255,246,247,251));
     desenharTexto(g, L"FASE " + to_wstring(faseAtual) + L" / " + to_wstring(TOTAL_FASES) + L"   -   " + NOMES_FASES[faseAtual-1], 24, 58, 14,
                   Gdiplus::Color(255,110,157,186));
-    desenharTexto(g, modo == AUTOMATICO ? L"COMPUTADOR JOGANDO" : doisJogadores ? L"COOPERATIVO LOCAL" : L"VOCE NO CONTROLE",
+    desenharTexto(g, modo == AUTOMATICO ? L"COMPUTADOR JOGANDO" : doisJogadores ? (modoRivais ? L"2P INIMIGOS" : L"2P AMIGOS") : L"VOCE NO CONTROLE",
                   800, 22, 16, Gdiplus::Color(255,98,235,199));
     desenharTexto(g, (dificuldade == FACIL ? L"FACIL" : dificuldade == MEDIO ? L"MEDIO" : L"DIFICIL") +
-                  wstring(L"   /   ") + to_wstring(tempoPartidaMs/1000) + L"s", 800, 53, 14,
+                  wstring(L"   /   ") + to_wstring(tempoPartidaMs/1000) + L"s" +
+                  (segundoJogadorAtivo() && jogadorCaido[0] && vidasJogador[0]==0 ? L"   /   P1 FORA" : L"") +
+                  (segundoJogadorAtivo() && jogadorCaido[1] && vidasJogador[1]==0 ? L"   /   P2 FORA" : L""), 800, 53, 14,
                   Gdiplus::Color(255,144,164,190));
+    desenharVidasJogadores(g);
+}
+
+// Vidas de cada jogador no topo (so com dois): rosto do personagem e 3 coracoes.
+void desenharVidasJogadores(Gdiplus::Graphics& g) {
+    if (!segundoJogadorAtivo()) return;
+    for (int i = 0; i < 2; i++) {
+        int x = 360 + i*215, y = 18;
+        Gdiplus::Color cor = i==0 ? Gdiplus::Color(255,98,235,199) : Gdiplus::Color(255,252,187,65);
+        painel(g, x, y, 200, 58, Gdiplus::Color(255,20,28,44));
+        painel(g, x, y, 4, 58, cor);
+        desenharRecorte(g, personagens[i==0 ? personagemP1 : personagemP2].get(), 16, 0, 16, 24, x+10, y+5, 32);
+        wstring nome = i==0 ? nomeJogador : nomeJogador2;
+        if (nome.empty()) nome = i==0 ? L"P1" : L"P2";
+        if (nome.size() > 10) nome = nome.substr(0,10) + L"...";
+        desenharTexto(g, (i==0 ? L"P1  " : L"P2  ") + nome, x+50, y+6, 11, cor);
+        for (int v = 0; v < VIDAS_POR_JOGADOR; v++) {
+            bool cheia = v < vidasJogador[i];
+            float cx = float(x+58+v*26), cy = float(y+40);
+            Gdiplus::SolidBrush pincel(cheia ? Gdiplus::Color(255,255,85,95) : Gdiplus::Color(255,58,66,82));
+            // Coracao: dois circulos e um triangulo.
+            g.FillEllipse(&pincel, px(cx-8), px(cy-7), px(9.f), px(9.f));
+            g.FillEllipse(&pincel, px(cx-1), px(cy-7), px(9.f), px(9.f));
+            Gdiplus::PointF ponta[] = {Gdiplus::PointF(px(cx-8),px(cy-1.5f)),Gdiplus::PointF(px(cx+8),px(cy-1.5f)),Gdiplus::PointF(px(cx),px(cy+8))};
+            g.FillPolygon(&pincel, ponta, 3);
+        }
+        if (vidasJogador[i] == 0 && jogadorCaido[i])
+            desenharTexto(g, L"FORA", x+142, y+31, 12, Gdiplus::Color(255,255,120,100));
+    }
 }
 
 void desenharPainelLateral(Gdiplus::Graphics& g) {
     painel(g, 794, ALTURA_CABECALHO, 272, LINHAS*TAMANHO_CELULA);
-    desenharTexto(g, L"PONTUACAO", 812, 121, 13, Gdiplus::Color(255,144,164,190));
-    desenharTexto(g, to_wstring(pontos), 810, 147, 38, Gdiplus::Color(255,246,247,251));
-    desenharTexto(g, L"VIDAS  " + to_wstring(vidas) + L"    INIMIGOS  " + to_wstring(inimigosVivos()),
+    if (segundoJogadorAtivo() && modoRivais) {
+        // Todos contra todos: placar separado.
+        desenharTexto(g, L"PONTUACAO   P1  x  P2", 812, 121, 13, Gdiplus::Color(255,144,164,190));
+        desenharTexto(g, to_wstring(pontosJogador[0]), 810, 147, 30, Gdiplus::Color(255,98,235,199));
+        desenharTexto(g, to_wstring(pontosJogador[1]), 935, 147, 30, Gdiplus::Color(255,252,187,65));
+    } else {
+        desenharTexto(g, segundoJogadorAtivo() ? L"PONTUACAO DO TIME" : L"PONTUACAO", 812, 121, 13, Gdiplus::Color(255,144,164,190));
+        desenharTexto(g, to_wstring(pontos), 810, 147, 38, Gdiplus::Color(255,246,247,251));
+    }
+    desenharTexto(g, (segundoJogadorAtivo() ? L"VIDAS  P1 " + to_wstring(vidasJogador[0]) + L"  P2 " + to_wstring(vidasJogador[1])
+                                            : L"VIDAS  " + to_wstring(vidas)) + L"    INIMIGOS  " + to_wstring(inimigosVivos()),
                   812, 207, 14, Gdiplus::Color(255,98,235,199));
-    desenharTexto(g, L"FOGO  " + to_wstring(alcanceExplosao) + L"    BOMBAS  " + to_wstring(bombas.size()) +
-                  L" / " + to_wstring(limiteBombas()), 812, 239, 14, Gdiplus::Color(255,252,187,65));
+    // O limite de bombas e de cada jogador.
+    wstring usoBombas = segundoJogadorAtivo()
+        ? L"P1 " + to_wstring(bombasDoDono(0)) + L"  P2 " + to_wstring(bombasDoDono(1)) + L" / " + to_wstring(limiteBombas())
+        : to_wstring(bombasDoDono(0)) + L" / " + to_wstring(limiteBombas());
+    desenharTexto(g, L"FOGO  " + to_wstring(alcanceExplosao) + L"    BOMBAS  " + usoBombas, 812, 239, 14, Gdiplus::Color(255,252,187,65));
     painel(g, 812, 278, 236, 1, Gdiplus::Color(255,55,68,86));
     desenharTexto(g, boss.vivo ? NOMES_BOSSES[indiceBoss()] : L"OBJETIVO DA FASE", 812, 298, 14,
                   Gdiplus::Color(255,252,187,65));
     if (boss.vivo) {
         desenharTexto(g,PODERES_BOSSES[indiceBoss()],812,568,12,Gdiplus::Color(255,255,190,100));
-        desenharRecorte(g, imagemBossAtual(), 0, 0, imagemBossAtual()?imagemBossAtual()->GetWidth():1, imagemBossAtual()?imagemBossAtual()->GetHeight():1, 842, 330, 172);
+        if(bossAnimado())desenharBossAnimado(g,842,330,172,true);
+        else desenharRecorte(g, imagemBossAtual(), 0, 0, imagemBossAtual()?imagemBossAtual()->GetWidth():1, imagemBossAtual()?imagemBossAtual()->GetHeight():1, 842, 330, 172);
         painel(g, 812, 510, 236, 10, Gdiplus::Color(255,60,25,35));
         painel(g, 812, 510, 236*boss.vida/vidaMaximaBoss(), 10, Gdiplus::Color(255,255,120,75));
         desenharTexto(g, L"VIDA DO CHEFE  " + to_wstring(boss.vida) + L" / " + to_wstring(vidaMaximaBoss()), 812, 532, 13,
@@ -2362,9 +3527,10 @@ void desenharPainelLateral(Gdiplus::Graphics& g) {
     desenharTexto(g, L"Bombas usadas   " + to_wstring(estatisticas.bombasUsadas), 812, 639, 14, Gdiplus::Color(255,220,230,240));
     desenharTexto(g, L"Itens coletados   " + to_wstring(estatisticas.itensColetados), 812, 668, 14, Gdiplus::Color(255,220,230,240));
     wstring itens;
-    if (possuiCartaChute) itens += L"E: chute  ";
-    if (possuiCartaTeleporte) itens += L"T: teleporte  ";
-    if (temBombaRelogio) itens += L"F: detonar  ";
+    bool joy = itensNoJoystick();
+    if (possuiCartaChute) itens += joy ? L"X: chute  " : L"E: chute  ";
+    if (possuiCartaTeleporte) itens += joy ? L"Y: teleporte  " : L"T: teleporte  ";
+    if (temBombaRelogio) itens += joy ? L"L/R: detonar  " : L"F: detonar  ";
     if (imuneAPropriaBomba) itens += L"Escudo  ";
     if (atravessaBlocoQuebravel) itens += L"Atravessar caixas";
     desenharTexto(g, itens, 812, 710, 12, Gdiplus::Color(255,252,187,65));
@@ -2373,10 +3539,13 @@ void desenharPainelLateral(Gdiplus::Graphics& g) {
 void desenharRodape(Gdiplus::Graphics& g) {
     int y = ALTURA_CABECALHO + LINHAS*TAMANHO_CELULA;
     painel(g, 0, y, LARGURA_JOGO, ALTURA_RODAPE, Gdiplus::Color(255,11,16,28));
-    desenharTexto(g, doisJogadores && modo == MANUAL
-                  ? L"P1  WASD + ESPACO      P2  SETAS + ENTER"
-                  : L"WASD / SETAS  mover       ESPACO  bomba", 24, y+12, 14, Gdiplus::Color(255,220,230,240));
-    desenharTexto(g, L"E  chute     T  teleporte     F  detonar     R  reiniciar     M  menu     ESC  sair",
+    desenharTexto(g, modo == MANUAL ? L"P1  " + teclasDoJogador(1) + (doisJogadores ? L"      P2  " + teclasDoJogador(2) : L"")
+                                    : wstring(L"COMPUTADOR JOGANDO      M  menu"), 24, y+12, 14, Gdiplus::Color(255,220,230,240));
+    desenharTexto(g, somenteJoystick()
+                  ? L"X  chute     Y  teleporte     L / R  detonar     SELECT  menu     fim da fase: A / START de novo"
+                  : itensNoJoystick()
+                  ? L"P1: X chute  Y teleporte  L/R detonar  SELECT menu     teclado: R reiniciar  M menu  ESC sair"
+                  : L"E  chute     T  teleporte     F  detonar     R  reiniciar     M  menu     ESC  sair",
                   24, y+39, 12, Gdiplus::Color(255,144,164,190));
 }
 
@@ -2401,23 +3570,52 @@ void desenharFimPartida(Gdiplus::Graphics& g) {
     else poseFinal(personagemP1,448,184);
     desenharTexto(g, venceu ? L"VOCE VENCEU!" : jogadoresAtingidos==4 ? L"MARIO FOI DERROTADO" : estado == FIM_DE_JOGO ? L"GAME OVER" : L"MAIS UMA CHANCE",
                   240, 423, 34, venceu ? Gdiplus::Color(255,98,235,199) : Gdiplus::Color(255,255,140,110), true);
-    desenharTexto(g, venceu ? L"Campanha concluida!" : L"Vidas restantes: " + to_wstring(vidas),
+    desenharTexto(g, venceu ? L"Campanha concluida!" : segundoJogadorAtivo() ? L"Os dois perderam as 3 vidas da fase." : L"Vidas restantes: " + to_wstring(vidas),
                   240, 480, 18, Gdiplus::Color(255,220,230,240), true);
-    desenharTexto(g, L"PONTOS  " + to_wstring(pontos), 240, 523, 22, Gdiplus::Color(255,252,187,65), true);
-    desenharTexto(g, estado == DERROTA ? L"R  tentar a fase novamente     M  menu" : L"R  nova partida     M  menu",
+    auto curto = [](const wstring& nome, const wchar_t* padrao) {
+        wstring n = nome.empty() ? padrao : nome; return n.size() > 14 ? n.substr(0,14) + L"..." : n; };
+    if (segundoJogadorAtivo() && modoRivais)
+        desenharTexto(g, curto(nomeJogador,L"P1") + L"  " + to_wstring(pontosJogador[0]) + L"     x     " +
+                      curto(nomeJogador2,L"P2") + L"  " + to_wstring(pontosJogador[1]), 240, 523, 20, Gdiplus::Color(255,252,187,65), true);
+    else
+        desenharTexto(g, (segundoJogadorAtivo() ? L"PONTOS DO TIME  " : L"PONTOS  ") + to_wstring(pontos), 240, 523, 22, Gdiplus::Color(255,252,187,65), true);
+    if(erroSalvarRanking)desenharTexto(g,L"Nao foi possivel salvar o ranking. Confira a permissao da pasta.",240,565,13,Gdiplus::Color(255,255,120,100));
+    wstring repetir = somenteJoystick() ? L"A / START" : algumJoystickNaPartida() ? L"R  ou  A / START" : L"R";
+    wstring menu = somenteJoystick() ? L"B / SELECT" : algumJoystickNaPartida() ? L"M  ou  B / SELECT" : L"M";
+    desenharTexto(g, repetir + (estado == DERROTA ? L"  tentar a fase novamente     " : L"  nova partida     ") + menu + L"  menu",
                   240, 602, 16, Gdiplus::Color(255,144,164,190), true);
 }
 
+void desenharNomeDigitavel(Gdiplus::Graphics& g,int x,int y,int largura,const wstring& nomeJogador,bool editandoNome,
+                           const wchar_t* vazio=L"Clique aqui e digite seu nome"){
+    auto salvo=g.Save();g.SetClip(Gdiplus::Rect(px(x),px(y),px(largura),px(29)));
+    auto formato=Gdiplus::StringFormat::GenericTypographic()->Clone();
+    formato->SetFormatFlags(formato->GetFormatFlags()|Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
+    Gdiplus::RectF medida;wstring prefixo=nomeJogador.substr(0,min(cursorNome,nomeJogador.size()));
+    auto* fonte=obterFonte(px(20));g.MeasureString(prefixo.c_str(),int(prefixo.size()),fonte,Gdiplus::PointF(0,0),formato,&medida);
+    float deslocamento=editandoNome?max(0.f,medida.Width-px(largura)+px(8)):0.f;
+    float origemX=px(x)-deslocamento;
+    Gdiplus::SolidBrush cor(nomeJogador.empty()?Gdiplus::Color(255,144,164,190):Gdiplus::Color(255,246,247,251));
+    const wchar_t* texto=nomeJogador.empty()?vazio:nomeJogador.c_str();
+    g.DrawString(texto,-1,fonte,Gdiplus::PointF(origemX,float(px(y))),formato,&cor);
+    if(editandoNome && (relogioAnimacaoMs/500)%2==0){Gdiplus::Pen cursor(Gdiplus::Color(255,98,235,199),max(1,px(2)));
+        float cx=origemX+medida.Width;g.DrawLine(&cursor,cx,float(px(y)),cx,float(px(y+24)));}
+    delete formato;g.Restore(salvo);
+}
 void desenharMenu(Gdiplus::Graphics& g) {
     fundoInterface(g);
     desenharTexto(g, L"ALGORITMOS E PROGRAMACAO II / UNIVALI", 44, 35, 13, Gdiplus::Color(255,110,157,186));
     desenharTexto(g, L"BOMBERMAN", 40, 70, 46, Gdiplus::Color(255,246,247,251));
-    desenharTexto(g, L"Oito arenas. Escolha onde comecar sua campanha.", 44, 135, 17, Gdiplus::Color(255,98,235,199));
+    desenharTexto(g, L"Dez arenas. Escolha onde comecar sua campanha.", 44, 135, 17, Gdiplus::Color(255,98,235,199));
+    // Os nomes sao digitados depois da escolha de 1 ou 2 jogadores.
     painel(g, 44, 192, 470, 75);
-    desenharTexto(g, L"SEU NOME NO RANKING", 60, 203, 11, Gdiplus::Color(255,144,164,190));
-    desenharTexto(g, (nomeJogador.empty() ? L"Digite seu nome" : nomeJogador) + wstring((relogioAnimacaoMs/500)%2 ? L" |" : L""),
-                  60, 228, 20, Gdiplus::Color(255,246,247,251));
-    const wchar_t* titulos[] = {L"1   JOGAR", L"2   MODO AUTOMATICO", L"3   COMO JOGAR", L"4   DIFICULDADES", L"5   PONTUACAO", L"6   RANKING"};
+    desenharTexto(g, L"NOMES NO RANKING", 60, 203, 11, Gdiplus::Color(255,144,164,190));
+    wstring nomes=nomeJogador.empty() ? L"Pedidos ao escolher 1 ou 2 jogadores"
+                 : L"P1 "+nomeJogador+(doisJogadores && !nomeJogador2.empty() ? L"   /   P2 "+nomeJogador2 : L"");
+    desenharTexto(g,nomes.size()>44 ? nomes.substr(0,44)+L"..." : nomes,60,224,18,
+                  nomeJogador.empty() ? Gdiplus::Color(255,144,164,190) : Gdiplus::Color(255,246,247,251));
+    desenharTexto(g,L"JOGAR > 1 ou 2 jogadores > nomes > controles > personagens",60,252,10,Gdiplus::Color(255,252,187,65));
+    const wchar_t* titulos[] = {L"1   JOGAR", L"2   DEMONSTRACAO (IA JOGA)", L"3   COMO JOGAR", L"4   DIFICULDADES", L"5   COMO PONTUAR", L"6   RANKING"};
     for (int i=0; i<6; ++i) {
         int y=287+i*57;
         painel(g, 44, y, 470, 47);
@@ -2436,7 +3634,7 @@ void desenharMenu(Gdiplus::Graphics& g) {
     }
     int q=(relogioAnimacaoMs/180)%3;
     desenharRecorte(g, personagens[personagemP1].get(), q*16,0,16,24,638,280,112);
-    desenharRecorte(g, spriteInimigoDirecional.get(), q*16,0,16,24,844,390,84);
+    desenharRecorte(g, imagemInimigoAtual(), q*16,0,16,24,844,390,84);
     desenharRecorte(g, spriteBombaAnimada.get(), ((relogioAnimacaoMs/125)%4)*16,0,16,16,770,350,64);
     desenharTexto(g, L"EXPLORE. DESCUBRA. SOBREVIVA.", 570, 551, 20, Gdiplus::Color(255,252,187,65));
     painel(g,550,604,486,55,Gdiplus::Color(255,59,28,42));
@@ -2444,21 +3642,169 @@ void desenharMenu(Gdiplus::Graphics& g) {
     desenharTexto(g,L"O jogo completo original da batalha de sprites",570,638,12,Gdiplus::Color(255,220,230,240));
     painel(g,550,666,486,61);
     desenharTexto(g,L"8   SELETOR DE FASES",570,677,18,Gdiplus::Color(255,252,187,65));
-    desenharTexto(g,L"Oito arenas para explorar e comparar",570,704,12,Gdiplus::Color(255,144,164,190));
+    desenharTexto(g,L"Dez arenas para explorar e comparar",570,704,12,Gdiplus::Color(255,144,164,190));
     painel(g,550,738,486,58);
     desenharTexto(g,L"7   ESCOLHER PERSONAGENS",570,746,18,Gdiplus::Color(255,98,235,199));
     desenharTexto(g,L"P1: "+wstring(nomesPersonagens[personagemP1])+L"   /   P2: "+nomesPersonagens[personagemP2],570,775,12,Gdiplus::Color(255,144,164,190));
-    desenharTexto(g, doisJogadores ? L"P   COOPERATIVO LIGADO" : L"P   ATIVAR SEGUNDO JOGADOR", 44, 664, 16, Gdiplus::Color(255,98,235,199));
-    desenharTexto(g, L"P1: WASD + Espaco   /   P2: Setas + Enter", 44, 695, 13, Gdiplus::Color(255,144,164,190));
-    desenharTexto(g, L"Escolha 1 ou 2 para selecionar a dificuldade.", 44, 754, 14, Gdiplus::Color(255,144,164,190));
+    painel(g,44,646,470,91,Gdiplus::Color(255,23,48,62));
+    desenharTexto(g,L"JOGADORES E CONTROLES",61,655,18,Gdiplus::Color(255,98,235,199));
+    desenharTexto(g,L"1 JOGAR: escolha 1 ou 2 jogadores, teclado/joystick e personagens.",61,684,12,Gdiplus::Color(255,220,230,240));
+    desenharTexto(g,situacaoControle(),61,708,11,Gdiplus::Color(255,252,187,65));
+    desenharTexto(g, L"1: jogar (ou A no joystick)   /   2: demonstracao com IA", 44, 754, 14, Gdiplus::Color(255,144,164,190));
     desenharTexto(g, L"Q / ESC   sair", 44, 796, 14, Gdiplus::Color(255,220,230,240));
+}
+
+// Textos de configuracao reaproveitados no menu, nas telas de escolha e no rodape.
+// O texto quebra no "\n" e cada linha e desenhada separada (sem corte).
+void desenharLinhas(Gdiplus::Graphics& g, const wstring& texto, float x, float y, float tamanho, Gdiplus::Color cor) {
+    size_t inicio = 0; int linha = 0;
+    while (true) {
+        size_t fim = texto.find(L'\n', inicio);
+        desenharTexto(g, texto.substr(inicio, fim == wstring::npos ? wstring::npos : fim - inicio), x, y + linha * tamanho * 1.45f, tamanho, cor);
+        if (fim == wstring::npos) break;
+        inicio = fim + 1; linha++;
+    }
+}
+
+void desenharQuantidadeJogadores(Gdiplus::Graphics& g) {
+    fundoInterface(g);
+    desenharTexto(g,L"QUANTOS VAO JOGAR?",44,48,34,Gdiplus::Color(255,246,247,251));
+    desenharTexto(g,L"Com dois, escolha se jogam como AMIGOS ou como INIMIGOS. Depois vem o nome de cada um.",44,106,17,Gdiplus::Color(255,110,157,186));
+    const wchar_t* titulos[]={L"1   1 JOGADOR",L"2   AMIGOS",L"3   INIMIGOS"};
+    const wchar_t* resumos[]={L"Teclado OU joystick,\nvoce escolhe.",L"2 jogadores no mesmo\ntime, 3 vidas cada,\npontos do time.",L"Todos contra todos:\n3 vidas cada e\npontos separados."};
+    const wchar_t* regras[]={L"Ninguem mais entra\nna arena.",L"Sua bomba nao fere o\nparceiro, mas fere voce.",L"Qualquer bomba fere\nqualquer um. O Mario\najuda quem o libertar."};
+    int atual=!doisJogadores ? 0 : modoRivais ? 2 : 1;
+    for(int i=0;i<3;++i) {
+        int x=44+i*337; bool marcado=atual==i;
+        Gdiplus::Color destaque=i==2 ? Gdiplus::Color(255,255,120,100) : Gdiplus::Color(255,98,235,199);
+        Gdiplus::Color cor=marcado ? destaque : Gdiplus::Color(255,55,68,86);
+        painel(g,x,182,317,400);
+        painel(g,x,182,317,5,cor);
+        if(marcado) painel(g,x,577,317,5,cor);
+        desenharTexto(g,titulos[i],x+20,204,24,marcado ? cor : Gdiplus::Color(255,220,230,240));
+        int q=(relogioAnimacaoMs/180)%3;
+        if(i==0) desenharRecorte(g,personagens[personagemP1].get(),q*16,0,16,24,x+118,252,80);
+        else {
+            desenharRecorte(g,personagens[personagemP1].get(),q*16,0,16,24,x+68,252,80);
+            desenharRecorte(g,personagens[personagemP2].get(),q*16,0,16,24,x+168,252,80);
+        }
+        desenharLinhas(g,resumos[i],x+20,372,15,Gdiplus::Color(255,220,230,240));
+        desenharLinhas(g,regras[i],x+20,452,13,Gdiplus::Color(255,144,164,190));
+        desenharTexto(g,marcado ? L"SELECIONADO" : L"ESCOLHER",x+20,546,15,cor);
+    }
+    painel(g,44,612,992,52,Gdiplus::Color(255,23,48,62));
+    desenharTexto(g,doisJogadores && !controleConectado ? L"Sem joystick: os dois dividem o teclado (WASD + ESPACO / SETAS + ENTER)." : situacaoControle(),
+                  62,627,15,Gdiplus::Color(255,252,187,65));
+    desenharTexto(g,L"1 / 2 / 3  escolher     SETAS + ENTER  (ou direcional + A)     ESC  menu",44,790,15,Gdiplus::Color(255,144,164,190));
+}
+
+// Nome de cada jogador para o ranking, com o TOP 10 ao lado.
+void desenharNomes(Gdiplus::Graphics& g, const vector<RegistroPontuacao>& registros) {
+    fundoInterface(g);
+    desenharTexto(g,L"NOMES PARA O RANKING",44,36,34,Gdiplus::Color(255,246,247,251));
+    desenharTexto(g,!doisJogadores ? L"1 JOGADOR: digite seu nome."
+                   : modoRivais ? L"INIMIGOS: cada um digita o seu nome e leva os proprios pontos."
+                                : L"AMIGOS: cada um digita o seu nome; os dois levam os pontos do time.",
+                  44,90,17,Gdiplus::Color(255,110,157,186));
+    for(int i=1;i<=(doisJogadores?2:1);++i) {
+        int y=150+(i-1)*118; bool ativo=editandoNome && campoNome==i;
+        const wstring& nome=i==1 ? nomeJogador : nomeJogador2;
+        Gdiplus::Color cor=i==1 ? Gdiplus::Color(255,98,235,199) : Gdiplus::Color(255,252,187,65);
+        painel(g,44,y,560,98,ativo ? Gdiplus::Color(255,30,52,66) : Gdiplus::Color(255,25,34,50));
+        painel(g,44,y,5,98,ativo ? cor : Gdiplus::Color(255,55,68,86));
+        desenharTexto(g,i==1 ? L"P1   NOME" : L"P2   NOME",64,y+12,13,cor);
+        if(ativo && selecionarNome && !nome.empty()) painel(g,62,y+44,400,29,Gdiplus::Color(255,40,83,110));
+        desenharNomeDigitavel(g,64,y+46,520,nome,ativo,i==1 ? L"Digite o nome de P1" : L"Digite o nome de P2");
+    }
+    int yTexto=doisJogadores ? 392 : 274;
+    desenharTexto(g,avisoNome,44,yTexto,15,Gdiplus::Color(255,255,140,110));
+    desenharLinhas(g,L"ENTER confirma e passa para o proximo"+wstring(doisJogadores ? L"\nSETAS cima / baixo trocam de campo" : L"")+
+                  L"\nESC volta     Backspace / Delete apagam",44,yTexto+34,14,Gdiplus::Color(255,220,230,240));
+    desenharLinhas(g,L"Joystick: o nome e digitado no teclado;\nA confirma e B volta.",44,yTexto+120,13,Gdiplus::Color(255,144,164,190));
+    painel(g,44,656,560,64,Gdiplus::Color(255,30,62,66));
+    painel(g,44,656,560,4,Gdiplus::Color(255,98,235,199));
+    desenharTexto(g,doisJogadores && campoNome==1 ? L"ENTER   CONFIRMAR P1" : L"ENTER   CONTINUAR",66,674,20,Gdiplus::Color(255,98,235,199));
+    painel(g,640,150,396,570,Gdiplus::Color(255,18,27,43));
+    desenharTexto(g,L"TOP 10",660,166,22,Gdiplus::Color(255,252,187,65));
+    desenharTexto(g,L"NOME",700,206,11,Gdiplus::Color(255,144,164,190));
+    desenharTexto(g,L"PONTOS",940,206,11,Gdiplus::Color(255,144,164,190));
+    if(registros.empty()) desenharTexto(g,L"Nenhuma partida salva ainda.",660,240,14,Gdiplus::Color(255,144,164,190));
+    for(int i=0;i<min(10,int(registros.size()));++i) {
+        int y=232+i*47; wstring nome=strParaW(registros[i].jogador);
+        if(nome.size()>17) nome=nome.substr(0,17)+L"...";
+        Gdiplus::Color cor=i==0 ? Gdiplus::Color(255,252,187,65) : Gdiplus::Color(255,220,230,240);
+        if(i%2==0) painel(g,652,y-6,372,40,Gdiplus::Color(255,24,34,52));
+        desenharTexto(g,to_wstring(i+1),662,y,16,cor);
+        desenharTexto(g,nome,700,y,16,cor);
+        desenharTexto(g,to_wstring(registros[i].pontuacao),940,y,16,cor);
+    }
+    desenharTexto(g,L"ENTER  confirmar     SETAS  trocar campo     ESC  voltar     ranking completo: opcao 6 do menu",44,790,14,Gdiplus::Color(255,144,164,190));
+}
+void desenharNomes(Gdiplus::Graphics& g) { desenharNomes(g, lerRanking()); }
+
+void desenharAtribuicaoControles(Gdiplus::Graphics& g) {
+    fundoInterface(g);
+    desenharTexto(g,L"QUEM USA CADA CONTROLE?",44,36,34,Gdiplus::Color(255,246,247,251));
+    desenharTexto(g,doisJogadores ? L"2 JOGADORES: leve o teclado e o joystick para o lado de cada jogador."
+                                  : L"1 JOGADOR: leve para P1 o controle que voce vai usar.",44,90,17,Gdiplus::Color(255,110,157,186));
+    const wchar_t* titulos[]={L"P1",L"SEM USO",L"P2"};
+    Gdiplus::Color coresLado[]={Gdiplus::Color(255,98,235,199),Gdiplus::Color(255,110,120,135),Gdiplus::Color(255,252,187,65)};
+    for(int i=0;i<3;++i) {
+        int x=44+i*346; bool inativa=i==2 && !doisJogadores;
+        painel(g,x,140,300,350,inativa ? Gdiplus::Color(255,18,23,33) : Gdiplus::Color(255,25,34,50));
+        painel(g,x,140,300,4,inativa ? Gdiplus::Color(255,45,52,64) : coresLado[i]);
+        desenharTexto(g,titulos[i],x+20,154,24,inativa ? Gdiplus::Color(255,70,80,95) : coresLado[i]);
+        if(inativa) desenharTexto(g,L"so com 2 jogadores",x+20,190,13,Gdiplus::Color(255,70,80,95));
+    }
+    auto cartao=[&](int lado,int y,const wstring& nome,const wstring& detalhe,bool disponivel) {
+        int x=44+(lado+1)*346+18;
+        Gdiplus::Color cor=!disponivel ? Gdiplus::Color(255,70,80,95) : lado==0 ? Gdiplus::Color(255,144,164,190) : coresLado[lado+1];
+        painel(g,x,y,264,112,disponivel ? Gdiplus::Color(255,35,48,68) : Gdiplus::Color(255,24,30,42));
+        painel(g,x,y,5,112,cor);
+        desenharTexto(g,nome,x+20,y+14,21,cor);
+        desenharTexto(g,detalhe,x+20,y+52,13,Gdiplus::Color(255,220,230,240));
+    };
+    bool joystick=controleConectado;
+    if(doisJogadores && !joystick) {
+        cartao(-1,232,L"TECLADO",L"WASD + ESPACO",true);
+        cartao(1,232,L"TECLADO",L"SETAS + ENTER",true);
+    } else {
+        int lado=ladoDispositivo(TECLADO);
+        cartao(lado,232,L"TECLADO",lado==0 ? L"nao sera usado" : teclasDoJogador(lado<0 ? 1 : 2),true);
+    }
+    if(joystick) {
+        int lado=ladoDispositivo(JOYSTICK);
+        wstring nome=nomeControle.size()>20 ? nomeControle.substr(0,20)+L"..." : nomeControle;
+        cartao(lado,362,L"JOYSTICK",lado==0 ? L"nao sera usado\n"+nome : nome+L"\nA ou B bomba",true);
+    } else cartao(0,362,L"JOYSTICK",L"nao detectado",false);
+    for(int i=0;i<2;++i) {
+        int x=44+i*506; bool habilitada=joystick || i==0;
+        bool marcada=habilitada && (i==0) == (dispositivoP1==TECLADO || !joystick);
+        Gdiplus::Color cor=!habilitada ? Gdiplus::Color(255,70,80,95) : marcada ? Gdiplus::Color(255,98,235,199) : Gdiplus::Color(255,220,230,240);
+        painel(g,x,512,486,64,marcada ? Gdiplus::Color(255,30,62,66) : Gdiplus::Color(255,25,34,50));
+        painel(g,x,512,4,64,cor);
+        wstring texto=doisJogadores ? (i==0 ? (joystick ? L"1   P1 TECLADO  +  P2 JOYSTICK" : L"1   P1 E P2 NO TECLADO") : L"2   P1 JOYSTICK  +  P2 TECLADO")
+                                    : (i==0 ? L"1   P1 NO TECLADO" : L"2   P1 NO JOYSTICK");
+        desenharTexto(g,texto,x+22,532,18,cor);
+    }
+    painel(g,44,594,992,46,Gdiplus::Color(255,23,48,62));
+    desenharTexto(g,situacaoControle(),62,607,15,Gdiplus::Color(255,252,187,65));
+    painel(g,44,656,992,64,Gdiplus::Color(255,30,62,66));
+    painel(g,44,656,992,4,Gdiplus::Color(255,98,235,199));
+    desenharTexto(g,L"ENTER / A   CONFIRMAR E ESCOLHER PERSONAGENS",62,676,20,Gdiplus::Color(255,98,235,199));
+    desenharTexto(g,L"SETAS ou A/D movem o TECLADO     direcional do joystick move o JOYSTICK     1 / 2 atalhos     ESC / B voltar",
+                  44,790,13,Gdiplus::Color(255,144,164,190));
 }
 
 void desenharPersonagens(Gdiplus::Graphics& g) {
     fundoInterface(g);
+    if(!doisJogadores) jogadorEmSelecao=1;
     desenharTexto(g,L"ESCOLHA SEU PERSONAGEM",44,48,34,Gdiplus::Color(255,246,247,251));
-    desenharTexto(g,L"Selecionando: JOGADOR "+to_wstring(jogadorEmSelecao),44,110,20,Gdiplus::Color(255,98,235,199));
-    desenharTexto(g,L"TAB troca entre P1 e P2. As quatro opcoes tem as mesmas habilidades.",44,151,15,Gdiplus::Color(255,144,164,190));
+    desenharTexto(g,resumoJogadores(),44,102,17,Gdiplus::Color(255,98,235,199));
+    desenharTexto(g,L"Escolhendo P"+to_wstring(jogadorEmSelecao)+L" - "+teclasDoJogador(jogadorEmSelecao)+L" - 1-4, setas ou clique; ENTER confirma.",
+                  44,137,17,jogadorEmSelecao==1 ? Gdiplus::Color(255,98,235,199) : Gdiplus::Color(255,252,187,65));
+    desenharTexto(g,doisJogadores?L"Depois de confirmar P1, a escolha passa para P2. TAB alterna. Todos tem as mesmas habilidades."
+                                :L"Cada personagem tem as mesmas habilidades.",44,174,14,Gdiplus::Color(255,144,164,190));
     int selecionado=jogadorEmSelecao==1 ? personagemP1 : personagemP2;
     for(int i=0;i<4;++i) {
         int x=44+i*254;
@@ -2467,66 +3813,80 @@ void desenharPersonagens(Gdiplus::Graphics& g) {
         painel(g,x,230,232,4,cor);
         desenharTexto(g,to_wstring(i+1)+L"   "+nomesPersonagens[i],x+18,259,20,Gdiplus::Color(255,220,230,240));
         desenharRecorte(g,personagens[i].get(),((relogioAnimacaoMs/180)%3)*16,0,16,24,x+40,310,152);
+        if(personagemP1==i)desenharTexto(g,L"P1",x+18,462,16,Gdiplus::Color(255,98,235,199));
+        if(doisJogadores && personagemP2==i)desenharTexto(g,L"P2",x+72,462,16,Gdiplus::Color(255,252,187,65));
         desenharTexto(g,i==selecionado ? L"SELECIONADO" : L"ESCOLHER",x+38,505,15,cor);
     }
-    desenharTexto(g,L"P1: "+wstring(nomesPersonagens[personagemP1])+L"     /     P2: "+nomesPersonagens[personagemP2],44,626,20,Gdiplus::Color(255,252,187,65));
-    desenharTexto(g,L"1 / 2 / 3 / 4  escolher     TAB  trocar jogador     ENTER  escolher fase     ESC  menu",44,790,15,Gdiplus::Color(255,144,164,190));
+    desenharTexto(g,doisJogadores?L"P1: "+wstring(nomesPersonagens[personagemP1])+L"     /     P2: "+nomesPersonagens[personagemP2]
+                                :L"P1: "+wstring(nomesPersonagens[personagemP1]),44,626,20,Gdiplus::Color(255,252,187,65));
+    desenharTexto(g,L"1-4 / SETAS escolher   ENTER ou A confirmar   TAB trocar P1/P2   M controles   ESC menu",44,790,14,Gdiplus::Color(255,144,164,190));
 }
 
 void desenharSeletorFases(Gdiplus::Graphics& g) {
     fundoInterface(g);
     desenharTexto(g,L"ESCOLHA SUA ARENA",44,36,34,Gdiplus::Color(255,246,247,251));
-    desenharTexto(g,L"A campanha continua da fase escolhida ate o Templo Arcano, onde esta o chefe final.",44,91,16,Gdiplus::Color(255,144,164,190));
+    desenharTexto(g,L"Escolha a fase inicial. A campanha segue ate o Vale Langrisser, dominio do Bowser.",44,91,16,Gdiplus::Color(255,144,164,190));
+    desenharTexto(g,modoPendente==MANUAL ? resumoJogadores() : wstring(L"DEMONSTRACAO  /  A IA JOGA"),44,121,14,Gdiplus::Color(255,98,235,199));
     for(int i=0;i<TOTAL_FASES;++i) {
-        int x=44+(i%4)*254,y=150+(i/4)*254;
-        painel(g,x,y,232,232);
+        int x=44+(i%5)*202,y=150+(i/5)*250;
+        painel(g,x,y,184,232);
         bool selecionada=faseSelecionada==i+1;
-        painel(g,x,y,232,3,selecionada ? Gdiplus::Color(255,98,235,199) : Gdiplus::Color(255,55,68,86));
+        painel(g,x,y,184,3,selecionada ? Gdiplus::Color(255,98,235,199) : Gdiplus::Color(255,55,68,86));
         TemaFase t=temaDaFase(i+1);
         for(int l=0;l<5;++l) for(int c=0;c<7;++c) {
             bool parede=l==0 || l==4 || c==0 || c==6 || (l==2 && c%2==0);
             bool caixa=!parede && (l+c)%3==0;
             auto* folha=parede ? t.paredeFolha : caixa ? t.caixaFolha : t.chaoFolha;
             Gdiplus::Rect r=parede ? t.parede : caixa ? t.caixa : t.chao;
-            if(folha) g.DrawImage(folha,Gdiplus::Rect(px(x+11+c*30),px(y+17+l*30),px(30),px(30)),r.X,r.Y,r.Width,r.Height,Gdiplus::UnitPixel);
+            if(folha) g.DrawImage(folha,Gdiplus::Rect(px(x+11+c*23),px(y+17+l*23),px(23),px(23)),r.X,r.Y,r.Width,r.Height,Gdiplus::UnitPixel);
         }
-        desenharTexto(g,to_wstring(i+1)+L"  "+NOMES_FASES[i],x+11,y+180,16,Gdiplus::Color(255,220,230,240));
-        desenharTexto(g,selecionada ? L"SELECIONADA" : i<3 ? L"ARENA ORIGINAL" : L"ARENA DO ESTUDO",x+11,y+207,11,
+        desenharTexto(g,to_wstring(i+1)+L"  "+NOMES_FASES[i],x+11,y+160,14,Gdiplus::Color(255,220,230,240));
+        desenharTexto(g,selecionada ? L"SELECIONADA" : i<3 ? L"ARENA ORIGINAL" : i<8 ? L"ARENA DO ESTUDO" : L"NOVA ARENA",x+11,y+195,11,
                       selecionada ? Gdiplus::Color(255,98,235,199) : Gdiplus::Color(255,144,164,190));
     }
     painel(g,44,683,992,76);
     desenharTexto(g,L"INICIAR NA FASE "+to_wstring(faseSelecionada)+L"  /  "+NOMES_FASES[faseSelecionada-1],62,701,22,Gdiplus::Color(255,252,187,65));
     if(faseSelecionada%2==0)desenharTexto(g,NOMES_BOSSES[faseSelecionada/2-1],62,734,15,Gdiplus::Color(255,255,135,85));
-    desenharTexto(g,L"1-8 / SETAS  selecionar     ENTER  iniciar     M  personagens     ESC  menu",44,790,15,Gdiplus::Color(255,144,164,190));
+    desenharTexto(g,L"1-9 / 0 / SETAS  selecionar     ENTER / A  iniciar     M / B  dificuldade     ESC  menu",44,790,15,Gdiplus::Color(255,144,164,190));
 }
 
-void desenharRanking(Gdiplus::Graphics& g) {
+void desenharRanking(Gdiplus::Graphics& g,vector<RegistroPontuacao> registros) {
     fundoInterface(g);
     desenharTexto(g, L"RANKING", 20, 40, 32, Gdiplus::Color(255, 65, 210, 235), true);
-    vector<RegistroPontuacao> registros = lerRanking();
+    desenharTexto(g,L"Melhor resultado por nome. Empate: menos bombas, depois menos movimentos.",20,82,13,Gdiplus::Color(255,144,164,190));
     if (registros.empty()) {
         desenharTexto(g, L"Nenhuma partida manual salva ainda.", 20, 110, 18,
                       Gdiplus::Color(255, 205, 210, 215));
     } else {
-        int y = 110;
-        int posicao = 1;
-        for (const RegistroPontuacao& registro : registros) {
-            if (posicao > 10) break;
-            wstring jogadorW(registro.jogador.begin(), registro.jogador.end());
-            wstring linha = to_wstring(posicao) + L". " + jogadorW + L" - " +
-                             to_wstring(registro.pontuacao) + L" pts  (" +
-                             to_wstring(registro.movimentos) + L" mov, " +
-                             to_wstring(registro.bombas) + L" bombas) - " +
-                             wstring(registro.data.begin(), registro.data.end());
-            desenharTexto(g, linha, 20, static_cast<float>(y), 15,
-                          Gdiplus::Color(255, 235, 235, 240));
-            y += 28;
-            posicao++;
+        rankingSelecionado=clamp(rankingSelecionado,0,int(registros.size())-1);
+        int inicio=rankingSelecionado/10*10;
+        desenharTexto(g,L"NOME",65,117,13);desenharTexto(g,L"PONTOS",460,117,13);
+        desenharTexto(g,L"BOMBAS",600,117,13);desenharTexto(g,L"MOVIMENTOS",715,117,13);desenharTexto(g,L"DATA",870,117,13);
+        for(int i=inicio;i<min(inicio+10,int(registros.size()));++i){
+            const auto& r=registros[i];int y=150+(i-inicio)*40;
+            if(i==rankingSelecionado)painel(g,20,y-3,1030,36,Gdiplus::Color(255,35,64,81));
+            desenharTexto(g,to_wstring(i+1),25,y,15);
+            desenharTexto(g,strParaW(r.jogador),65,y,16);
+            desenharTexto(g,to_wstring(r.pontuacao),460,y,16);
+            desenharTexto(g,to_wstring(r.bombas),600,y,15);
+            desenharTexto(g,to_wstring(r.movimentos),715,y,15);
+            desenharTexto(g,strParaW(r.data),870,y,15);
         }
+        desenharTexto(g,L"Pagina "+to_wstring(inicio/10+1)+L" de "+to_wstring((registros.size()+9)/10)+L"  /  SETAS selecionam, PgUp/PgDn mudam pagina",20,565,14);
+        painel(g,20,610,280,44);desenharTexto(g,L"E  RENOMEAR",35,621,18);
+        painel(g,320,610,280,44);desenharTexto(g,L"DEL  EXCLUIR",335,621,18,Gdiplus::Color(255,255,120,100));
     }
+    if(editandoNome && !nomeOriginalRanking.empty()){
+        painel(g,20,675,740,65);if(selecionarNome)painel(g,32,699,600,28,Gdiplus::Color(255,40,83,110));
+        desenharTexto(g,L"NOVO NOME  /  ENTER salva, ESC cancela",35,681,12);
+        desenharNomeDigitavel(g,35,703,700,nomeJogador,editandoNome);
+    }
+    desenharTexto(g,avisoRanking,20,755,14,Gdiplus::Color(255,252,187,65));
     desenharTexto(g, L"[M ou ESC] Voltar ao menu", 20, ALTURA_JOGO - 40.0f, 15,
                   Gdiplus::Color(255, 160, 165, 170), true);
 }
+
+void desenharRanking(Gdiplus::Graphics& g){desenharRanking(g,lerRanking());}
 
 void desenharEscolhaDificuldade(Gdiplus::Graphics& g) {
     fundoInterface(g);
@@ -2540,16 +3900,19 @@ void desenharEscolhaDificuldade(Gdiplus::Graphics& g) {
         int x=44+i*338;
         painel(g,x,182,316,380);
         painel(g,x,182,316,4,cores[i]);
+        if(!informativa && dificuldade==i){painel(g,x,557,316,5,cores[i]);desenharTexto(g,L"SELECIONADO",x+18,522,14,cores[i]);}
         desenharTexto(g,nomes[i],x+18,210,26,cores[i]);
         desenharTexto(g,ritmos[i],x+18,259,13,Gdiplus::Color(255,144,164,190));
-        desenharRecorte(g,spriteInimigoDirecional.get(),((relogioAnimacaoMs/180)%3)*16,0,16,24,x+109,299,96);
+        desenharTexto(g,i==0 ? L"Um inimigo solta bombas" : i==1 ? L"Metade dos inimigos solta bombas" : L"75% dos inimigos soltam bombas",
+                      x+18,280,13,cores[i]);
+        desenharRecorte(g,imagemInimigoAtual(),((relogioAnimacaoMs/180)%3)*16,0,16,24,x+109,299,96);
         desenharTexto(g,to_wstring(i==0 ? 3 : i==1 ? 5 : 7)+L" inimigos por fase",x+18,414,17,Gdiplus::Color(255,220,230,240));
         desenharTexto(g,i==0 ? L"Perseguicao ate 5 celulas" : L"Perseguicao a qualquer distancia",x+18,457,14,Gdiplus::Color(255,144,164,190));
         desenharTexto(g,to_wstring(i==0 ? 25 : i==1 ? 50 : 75)+L"% de chance de perseguir",x+18,490,14,cores[i]);
     }
-    desenharTexto(g,L"8 FASES   /   PORTAIS   /   ITENS ESCONDIDOS",44,610,22,Gdiplus::Color(255,252,187,65));
-    desenharTexto(g,L"Na ultima fase: inimigo especial e o chefe final com 5 pontos de vida.",44,658,17,Gdiplus::Color(255,220,230,240));
-    desenharTexto(g,informativa ? L"M / ESC   voltar ao menu" : L"1 / 2 / 3   iniciar partida       M / ESC   voltar",44,790,16,Gdiplus::Color(255,144,164,190));
+    desenharTexto(g,L"10 FASES   /   PORTAIS   /   ITENS ESCONDIDOS",44,610,22,Gdiplus::Color(255,252,187,65));
+    desenharTexto(g,L"Chefes a cada duas fases; Bowser encerra a campanha na fase 10.",44,658,17,Gdiplus::Color(255,220,230,240));
+    desenharTexto(g,informativa ? L"M / ESC   voltar ao menu" : L"1 / 2 / 3  ou  SETAS + ENTER (direcional + A)   escolher       M / B   voltar",44,790,16,Gdiplus::Color(255,144,164,190));
 }
 
 void desenharComoJogar(Gdiplus::Graphics& g) {
@@ -2557,16 +3920,16 @@ void desenharComoJogar(Gdiplus::Graphics& g) {
     desenharTexto(g, L"COMO JOGAR", 20, 30, 28, Gdiplus::Color(255, 65, 210, 235), true);
     struct Linha { const wchar_t* texto; int y; bool titulo; };
     const Linha linhas[] = {
-        {L"Objetivo: limpe os inimigos das 8 fases da campanha, pise no", 80, false},
-        {L"portal que aparece; fases 2, 4, 6 e 8 tem chefes.", 98, false},
+        {L"Objetivo: limpe os inimigos das 10 fases da campanha, pise no", 80, false},
+        {L"portal que aparece; fases 2, 4, 6, 8 e 10 tem chefes.", 98, false},
         {L"", 118, false},
         {L"Controles", 130, true},
         {L"WASD ou setas: mover   Espaco: colocar bomba", 156, false},
         {L"E: chutar bomba (precisa do item)   T: teleportar (precisa do item)", 174, false},
         {L"F: detonar bombas-relogio (precisa do item)", 192, false},
         {L"R: reiniciar a fase atual   M: voltar ao menu   Q/ESC: sair", 210, false},
-        {L"", 230, false},
-        {L"Bombas e explosao", 242, true},
+        {L"Joystick: mover, A/B bomba, X chute, Y teleporte, L/R detonar, Select menu", 228, false},
+        {L"Bombas e explosao", 248, true},
         {L"A bomba explode sozinha apos alguns segundos. A chama se espalha", 268, false},
         {L"em cruz e atravessa quantos blocos frageis o nivel do fogo permitir,", 286, false},
         {L"destruindo cada um deles no caminho (ate parar numa parede solida).", 304, false},
@@ -2574,6 +3937,14 @@ void desenharComoJogar(Gdiplus::Graphics& g) {
         {L"Vidas", 336, true},
         {L"Voce comeca cada fase com um numero base de vidas. Morrer custa 1", 362, false},
         {L"vida e reinicia a fase atual; zerar as vidas termina a partida.", 380, false},
+        {L"Dois jogadores", 410, true},
+        {L"Cada um tem 3 vidas por fase; sem vidas, volta na proxima fase.", 436, false},
+        {L"AMIGOS: a bomba de um nao fere o outro (a sua propria fere voce).", 454, false},
+        {L"INIMIGOS: todos contra todos; o Mario ajuda quem o libertar primeiro.", 472, false},
+        {L"Cada jogador tem seu proprio limite de bombas.", 490, false},
+        {L"Inimigos", 520, true},
+        {L"Facil: um inimigo solta bombas; Medio: metade; Dificil: 75%.", 546, false},
+        {L"A bomba de inimigo tem arco roxo e fere so os jogadores.", 564, false},
     };
     for (const Linha& l : linhas) {
         if (l.texto[0] == L'\0') continue;
@@ -2587,32 +3958,29 @@ void desenharComoJogar(Gdiplus::Graphics& g) {
 
 void desenharPontuacaoInfo(Gdiplus::Graphics& g) {
     fundoInterface(g);
-    desenharTexto(g, L"PONTUACAO", 20, 30, 28, Gdiplus::Color(255, 65, 210, 235), true);
-    desenharTexto(g, L"A pontuacao nunca fica negativa (fica parada em 0).", 20, 74, 14,
-                  Gdiplus::Color(255, 205, 210, 215));
-    struct Linha { wstring texto; bool positivo; };
-    const Linha linhas[] = {
-        {L"+ " + to_wstring(PONTOS_POR_INIMIGO) + L" por inimigo abatido", true},
-        {L"+ " + to_wstring(PONTOS_POR_CAIXA) + L" por caixa (bloco fragil) destruida", true},
-        {L"+ " + to_wstring(PONTOS_POR_ITEM) + L" por item coletado", true},
-        {L"+ " + to_wstring(PONTOS_POR_FASE) + L" por fase concluida (pisar no portal)", true},
-        {L"+ " + to_wstring(PONTOS_POR_BOSS) + L" de bonus por derrotar o boss (fase final)", true},
-        {L"- " + to_wstring(CUSTO_POR_MOVIMENTO) + L" por movimento", false},
-        {L"- " + to_wstring(CUSTO_POR_BOMBA) + L" por bomba usada", false},
-    };
-    int y = 110;
-    for (const Linha& l : linhas) {
-        desenharTexto(g, l.texto, 20, static_cast<float>(y), 17,
-                      l.positivo ? Gdiplus::Color(255, 120, 230, 140) : Gdiplus::Color(255, 240, 120, 120),
-                      true);
-        y += 32;
-    }
-    desenharTexto(g, L"Esses mesmos valores sao usados de verdade no calculo", 20,
-                  static_cast<float>(y + 10), 13, Gdiplus::Color(255, 180, 225, 255));
-    desenharTexto(g, L"durante a partida e no que fica salvo no ranking.", 20,
-                  static_cast<float>(y + 28), 13, Gdiplus::Color(255, 180, 225, 255));
-    desenharTexto(g, L"[M ou ESC] Voltar", 20, ALTURA_JOGO - 40.0f, 15,
-                  Gdiplus::Color(255, 160, 165, 170), true);
+    const Gdiplus::Color titulo(255,98,235,199), texto(255,220,230,240), destaque(255,252,187,65);
+    desenharTexto(g,L"COMO FUNCIONA A PONTUACAO",44,46,30,titulo,true);
+    desenharTexto(g,L"Os pontos entram quando voce realiza uma acao. Caminhar sozinho nao soma nem desconta.",44,93,14,texto);
+    painel(g,44,145,480,255);
+    desenharTexto(g,L"RECOMPENSAS IMEDIATAS",63,164,20,destaque);
+    desenharTexto(g,L"+ "+to_wstring(PONTOS_POR_INIMIGO)+L"   inimigo derrotado",63,206,17,texto);
+    desenharTexto(g,L"+ "+to_wstring(PONTOS_POR_CAIXA)+L"     bloco quebravel destruido",63,245,17,texto);
+    desenharTexto(g,L"+ "+to_wstring(PONTOS_POR_ITEM)+L"     item coletado",63,284,17,texto);
+    desenharTexto(g,L"+ "+to_wstring(PONTOS_POR_BOSS)+L"   chefe derrotado",63,323,17,texto);
+    painel(g,548,145,488,255);
+    desenharTexto(g,L"BONUS AO ENTRAR NO PORTAL",567,164,20,destaque);
+    desenharTexto(g,L"Base: "+to_wstring(PONTOS_POR_FASE)+L" pontos por fase",567,207,17,texto);
+    desenharTexto(g,L"- "+to_wstring(CUSTO_POR_MOVIMENTO)+L" por movimento nesta fase",567,246,17,texto);
+    desenharTexto(g,L"- "+to_wstring(CUSTO_POR_BOMBA)+L" por bomba plantada nesta fase",567,285,17,texto);
+    desenharTexto(g,L"Minimo do bonus: 0 ponto",567,324,17,titulo);
+    painel(g,44,423,992,256,Gdiplus::Color(255,18,27,43));
+    desenharTexto(g,L"EXEMPLO",63,443,19,destaque);
+    desenharTexto(g,L"40 movimentos e 4 bombas: "+to_wstring(PONTOS_POR_FASE)+L" - 40 - 20 = "+to_wstring(max(0,PONTOS_POR_FASE-40*CUSTO_POR_MOVIMENTO-4*CUSTO_POR_BOMBA))+L" pontos de bonus.",63,482,17,texto);
+    desenharTexto(g,L"Andar e plantar bombas so afetam esse bonus quando a fase termina.",63,525,15,texto);
+    desenharTexto(g,L"Mario pode render pontos por inimigos e blocos; acertos isolados nao pontuam.",63,559,15,texto);
+    desenharTexto(g,L"2P AMIGOS: o time divide os pontos. 2P INIMIGOS: cada um soma os seus (+"+to_wstring(PONTOS_POR_INIMIGO)+L" por derrubar o rival).",63,593,15,texto);
+    desenharTexto(g,L"A pontuacao total nunca fica abaixo de zero.",63,627,15,titulo);
+    desenharTexto(g,L"[M ou ESC] Voltar ao menu",44,ALTURA_JOGO-49.0f,16,texto,true);
 }
 
 void ajustarAreaDesenho(int largura, int altura) {
@@ -2650,6 +4018,9 @@ void desenhar(HWND janela) {
             case MENU_DIFICULDADES_INFO: desenharEscolhaDificuldade(g); break;
             case MENU_COMO_JOGAR: desenharComoJogar(g); break;
             case MENU_PONTUACAO: desenharPontuacaoInfo(g); break;
+            case MENU_QUANTIDADE_JOGADORES: desenharQuantidadeJogadores(g); break;
+            case MENU_ATRIBUICAO_CONTROLES: desenharAtribuicaoControles(g); break;
+            case MENU_NOMES: desenharNomes(g); break;
             default: desenharMenu(g); break;
         }
     } else {
@@ -2687,35 +4058,106 @@ void lerTeclado(WPARAM tecla, LPARAM lParam) {
     // segundo na taxa de repeticao do teclado, fora do controle do jogo).
     bool repetida = (lParam & (1 << 30)) != 0;
     if (repetida) return;
+    if(modo==MENU && (telaMenu==MENU_NOMES || telaMenu==MENU_RANKING) && editandoNome){
+        wstring& nome=nomeEmEdicao();
+        cursorNome=min(cursorNome,nome.size());
+        bool telaNomes=telaMenu==MENU_NOMES;
+        if(tecla==VK_RETURN || tecla==VK_TAB){if(telaNomes)confirmarCampoNome();else terminarRenomeacaoRanking(true);}
+        else if(tecla==VK_ESCAPE){
+            if(!telaNomes)terminarRenomeacaoRanking(false);
+            else if(campoNome==2)editarCampoNome(1);
+            else {editandoNome=false;selecionarNome=false;avisoNome.clear();telaMenu=MENU_QUANTIDADE_JOGADORES;}
+        }
+        else if(telaNomes && (tecla==VK_UP || tecla==VK_DOWN)){if(doisJogadores)editarCampoNome(3-campoNome);}
+        else if(tecla==VK_HOME){cursorNome=0;selecionarNome=false;}
+        else if(tecla==VK_END){cursorNome=nome.size();selecionarNome=false;}
+        else if(tecla==VK_LEFT){if(cursorNome)cursorNome--;selecionarNome=false;}
+        else if(tecla==VK_RIGHT){cursorNome=min(cursorNome+1,nome.size());selecionarNome=false;}
+        else if(tecla==VK_DELETE){if(selecionarNome){nome.clear();cursorNome=0;selecionarNome=false;}else if(cursorNome<nome.size())nome.erase(cursorNome,1);}
+        else if(tecla=='A' && (GetKeyState(VK_CONTROL)&0x8000))selecionarNome=true;
+        return;
+    }
     if (modo == MENU) {
+        if(telaMenu==MENU_RANKING){
+            auto r=lerRanking();int total=int(r.size());
+            if(tecla==VK_UP)rankingSelecionado=max(0,rankingSelecionado-1);
+            else if(tecla==VK_DOWN)rankingSelecionado=min(max(0,total-1),rankingSelecionado+1);
+            else if(tecla==VK_PRIOR)rankingSelecionado=max(0,rankingSelecionado-10);
+            else if(tecla==VK_NEXT)rankingSelecionado=min(max(0,total-1),rankingSelecionado+10);
+            else if(tecla=='E')iniciarRenomeacaoRanking();
+            else if(tecla==VK_DELETE)pedirExclusaoRanking();
+            else if(tecla=='M' || tecla==VK_ESCAPE)telaMenu=MENU_PRINCIPAL;
+            return;
+        }
         if (telaMenu==MENU_FASES) {
-            int escolha=tecla>='1' && tecla<='8' ? static_cast<int>(tecla-'0')
-                       : tecla>=VK_NUMPAD1 && tecla<=VK_NUMPAD8 ? static_cast<int>(tecla-VK_NUMPAD1+1) : 0;
+            int escolha=tecla>='1' && tecla<='9' ? static_cast<int>(tecla-'0')
+                       : tecla>=VK_NUMPAD1 && tecla<=VK_NUMPAD9 ? static_cast<int>(tecla-VK_NUMPAD1+1) : (tecla=='0' || tecla==VK_NUMPAD0)?10:0;
             if(escolha) faseSelecionada=escolha;
             else if(tecla==VK_LEFT) faseSelecionada=(faseSelecionada+TOTAL_FASES-2)%TOTAL_FASES+1;
             else if(tecla==VK_RIGHT) faseSelecionada=faseSelecionada%TOTAL_FASES+1;
-            else if(tecla==VK_UP || tecla==VK_DOWN) faseSelecionada=(faseSelecionada+3)%TOTAL_FASES+1;
-            else if(tecla==VK_RETURN) novaPartida(modoPendente,dificuldade);
-            else if(tecla=='M') telaMenu=MENU_PERSONAGENS;
+            else if(tecla==VK_UP || tecla==VK_DOWN) faseSelecionada=(faseSelecionada+4)%TOTAL_FASES+1;
+            else if(tecla==VK_RETURN){if(modoPendente!=MANUAL || nomesProntos())novaPartida(modoPendente,dificuldade);else abrirTelaNomes(MENU_FASES);}
+            else if(tecla=='M') telaMenu=MENU_DIFICULDADE;
             else if(tecla==VK_ESCAPE) telaMenu=MENU_PRINCIPAL;
             return;
         }
+        if (telaMenu == MENU_QUANTIDADE_JOGADORES) {
+            // Tres opcoes: 1 jogador, 2 AMIGOS e 2 INIMIGOS (todos contra todos).
+            int escolha=tecla>='1' && tecla<='3' ? int(tecla-'1') : tecla>=VK_NUMPAD1 && tecla<=VK_NUMPAD3 ? int(tecla-VK_NUMPAD1) : -1;
+            int atual=!doisJogadores ? 0 : modoRivais ? 2 : 1;
+            if(tecla==VK_LEFT || tecla==VK_UP) atual=(atual+2)%3;
+            else if(tecla==VK_RIGHT || tecla==VK_DOWN) atual=(atual+1)%3;
+            if(escolha>=0) atual=escolha;
+            doisJogadores=atual>0; modoRivais=atual==2;
+            if(escolha>=0 || tecla==VK_RETURN) abrirTelaNomes(MENU_ATRIBUICAO_CONTROLES);
+            else if(tecla=='M' || tecla==VK_ESCAPE) telaMenu=MENU_PRINCIPAL;
+            return;
+        }
+        if (telaMenu == MENU_NOMES) {
+            // Fora da digitacao (ex.: clique fora do campo): volta a editar.
+            if(tecla=='M' || tecla==VK_ESCAPE) telaMenu=MENU_QUANTIDADE_JOGADORES;
+            else editarCampoNome(campoNome);
+            return;
+        }
+        if (telaMenu == MENU_ATRIBUICAO_CONTROLES) {
+            // Setas/A/D movem o cartao TECLADO; o direcional do joystick move o
+            // cartao JOYSTICK (ver processarControleNoMenu).
+            if(tecla==VK_LEFT || tecla=='A') moverDispositivo(TECLADO,-1);
+            else if(tecla==VK_RIGHT || tecla=='D') moverDispositivo(TECLADO,1);
+            else if(tecla=='1' || tecla==VK_NUMPAD1) escolherOpcaoControles(0);
+            else if(tecla=='2' || tecla==VK_NUMPAD2) escolherOpcaoControles(1);
+            else if(tecla==VK_RETURN){validarAtribuicao();jogadorEmSelecao=1;telaMenu=MENU_PERSONAGENS;}
+            else if(tecla=='M' || tecla==VK_ESCAPE) abrirTelaNomes(MENU_ATRIBUICAO_CONTROLES);
+            return;
+        }
         if (telaMenu == MENU_PERSONAGENS) {
+            if(!doisJogadores) jogadorEmSelecao=1;
+            int& atual=jogadorEmSelecao==1 ? personagemP1 : personagemP2;
             int escolha = tecla >= '1' && tecla <= '4' ? static_cast<int>(tecla-'1')
                         : tecla >= VK_NUMPAD1 && tecla <= VK_NUMPAD4 ? static_cast<int>(tecla-VK_NUMPAD1) : -1;
-            if (escolha>=0) { if(jogadorEmSelecao==1) personagemP1=escolha; else personagemP2=escolha; }
-            else if(tecla==VK_TAB) jogadorEmSelecao=3-jogadorEmSelecao;
-            else if(tecla==VK_RETURN) telaMenu=MENU_FASES;
-            else if(tecla=='M' || tecla==VK_ESCAPE) telaMenu=MENU_PRINCIPAL;
+            if (escolha>=0) { atual=escolha; if(jogadorEmSelecao==1 && doisJogadores) jogadorEmSelecao=2; }
+            else if(tecla==VK_LEFT) atual=(atual+3)%4;
+            else if(tecla==VK_RIGHT) atual=(atual+1)%4;
+            else if(tecla==VK_TAB && doisJogadores) jogadorEmSelecao=3-jogadorEmSelecao;
+            else if(tecla==VK_RETURN) {
+                if(jogadorEmSelecao==1 && doisJogadores) jogadorEmSelecao=2;
+                else telaMenu=MENU_DIFICULDADE;
+            }
+            else if(tecla=='M') telaMenu=MENU_ATRIBUICAO_CONTROLES;
+            else if(tecla==VK_ESCAPE) telaMenu=MENU_PRINCIPAL;
             return;
         }
         if (telaMenu == MENU_DIFICULDADE) {
             // Aceita tanto os numeros da fileira superior quanto o teclado
             // numerico (numpad), que usa codigos de tecla virtuais diferentes.
-            if (tecla == '1' || tecla == VK_NUMPAD1) { dificuldade=FACIL; telaMenu=MENU_PERSONAGENS; }
-            else if (tecla == '2' || tecla == VK_NUMPAD2) { dificuldade=MEDIO; telaMenu=MENU_PERSONAGENS; }
-            else if (tecla == '3' || tecla == VK_NUMPAD3) { dificuldade=DIFICIL; telaMenu=MENU_PERSONAGENS; }
-            else if (tecla == 'M' || tecla == VK_ESCAPE) telaMenu = MENU_PRINCIPAL;
+            if (tecla == '1' || tecla == VK_NUMPAD1) { dificuldade=FACIL; telaMenu=MENU_FASES; }
+            else if (tecla == '2' || tecla == VK_NUMPAD2) { dificuldade=MEDIO; telaMenu=MENU_FASES; }
+            else if (tecla == '3' || tecla == VK_NUMPAD3) { dificuldade=DIFICIL; telaMenu=MENU_FASES; }
+            else if (tecla == VK_LEFT) dificuldade=static_cast<Dificuldade>((dificuldade+2)%3);
+            else if (tecla == VK_RIGHT) dificuldade=static_cast<Dificuldade>((dificuldade+1)%3);
+            else if (tecla == VK_RETURN) telaMenu=MENU_FASES;
+            else if (tecla == 'M') telaMenu = modoPendente==MANUAL ? MENU_PERSONAGENS : MENU_PRINCIPAL;
+            else if (tecla == VK_ESCAPE) telaMenu = MENU_PRINCIPAL;
             return;
         }
         if (telaMenu != MENU_PRINCIPAL) {
@@ -2724,7 +4166,8 @@ void lerTeclado(WPARAM tecla, LPARAM lParam) {
             if (tecla == 'M' || tecla == VK_ESCAPE) telaMenu = MENU_PRINCIPAL;
             return;
         }
-        if (tecla == '1' || tecla == VK_NUMPAD1) { modoPendente = MANUAL; telaMenu = MENU_DIFICULDADE; }
+        // O nome de cada jogador e pedido depois da escolha de 1 ou 2 jogadores.
+        if (tecla == '1' || tecla == VK_NUMPAD1) { modoPendente = MANUAL; telaMenu = MENU_QUANTIDADE_JOGADORES; }
         else if (tecla == '2' || tecla == VK_NUMPAD2) { modoPendente = AUTOMATICO; telaMenu = MENU_DIFICULDADE; }
         else if (tecla == '3') telaMenu = MENU_COMO_JOGAR;
         else if (tecla == '4') telaMenu = MENU_DIFICULDADES_INFO;
@@ -2733,22 +4176,73 @@ void lerTeclado(WPARAM tecla, LPARAM lParam) {
         else if (tecla == '7' || tecla == VK_NUMPAD7) { modoPendente=MANUAL; telaMenu=MENU_PERSONAGENS; jogadorEmSelecao=1; }
         else if (tecla == '8' || tecla == VK_NUMPAD8) { modoPendente=MANUAL; telaMenu=MENU_FASES; }
         else if (tecla == '9' || tecla == VK_NUMPAD9) iniciarModoInsano();
-        else if (tecla == 'P') doisJogadores = !doisJogadores;
         else if (tecla == 'Q' || tecla == VK_ESCAPE) DestroyWindow(janelaPrincipal);
         return;
     }
     if (tecla == 'M') modo = MENU;
-    else if (tecla == ' ') colocarBomba();
+    // Espaco acompanha WASD e Enter acompanha as setas (ver teclaDoJogador).
+    else if (tecla == ' ') {
+        if (teclaDoJogador(false) & TECLAS_WASD) colocarBomba();
+        else if (teclaDoJogador(true) & TECLAS_WASD) colocarBomba2();
+    }
     else if (tecla == 'E') chutarBomba();
     else if (tecla == 'T') teletransportarJogador();
     else if (tecla == 'F') detonarBombasRelogio();
-    else if (tecla == VK_RETURN) { if (doisJogadores) colocarBomba2(); }
+    else if (tecla == VK_RETURN) {
+        if (teclaDoJogador(true) & TECLAS_SETAS) colocarBomba2();
+        else if (teclaDoJogador(false) & TECLAS_SETAS) colocarBomba();
+    }
     else if (tecla == 'R') {
         if ((estado==DERROTA || estado==FIM_DE_JOGO) && tempoFimMs<DURACAO_MORTE_MS) return;
         if (estado == FIM_DE_JOGO || estado == VITORIA) novaPartida(modo, dificuldade);
         else reiniciarFase();
     }
     else if (tecla == 'Q' || tecla == VK_ESCAPE) DestroyWindow(janelaPrincipal);
+}
+
+// Botoes do joystick fora do movimento: navegacao nos menus (direcional =
+// setas, A/Start = Enter, B/Select = voltar) e, na partida, itens de P1,
+// Select para o menu e Start para tentar de novo. So age no toque, nao ao segurar.
+void processarControleNoMenu() {
+    EntradaControle e = entradaControle, ant = controleMenuAnterior;
+    controleMenuAnterior = e;
+    if (!controleConectado) return;
+    auto novo = [](bool agora, bool antes) { return agora && !antes; };
+    bool direcaoNova = (e.dl || e.dc) && (e.dl != ant.dl || e.dc != ant.dc);
+    if (modo != MENU) {
+        if (estado != JOGANDO) {
+            // A/B tambem plantam bomba: so valem depois que o painel final
+            // aparece, para quem ainda estava apertando nao pular a tela.
+            bool painelPronto = tempoFimMs >= (estado == VITORIA ? 600 : DURACAO_MORTE_MS + 400);
+            if (!painelPronto) return;
+            if (novo(e.voltar, ant.voltar) || novo(e.select, ant.select)) lerTeclado('M', 0);
+            else if (novo(e.confirmar, ant.confirmar) || novo(e.start, ant.start)) lerTeclado('R', 0);
+            return;
+        }
+        if (novo(e.select, ant.select)) { lerTeclado('M', 0); return; }
+        if (controleNoJogador(1)) {
+            if (novo(e.chute, ant.chute)) chutarBomba();
+            if (novo(e.teleporte, ant.teleporte)) teletransportarJogador();
+            if (novo(e.detonar, ant.detonar)) detonarBombasRelogio();
+        }
+        return;
+    }
+    if (telaMenu == MENU_NOMES) {
+        // O nome vem do teclado; o joystick confirma, volta e troca o campo.
+        if (direcaoNova && e.dl) lerTeclado(e.dl < 0 ? VK_UP : VK_DOWN, 0);
+        else if (novo(e.voltar, ant.voltar) || novo(e.select, ant.select)) lerTeclado(VK_ESCAPE, 0);
+        else if ((novo(e.confirmar, ant.confirmar) || novo(e.start, ant.start)) && !e.select) lerTeclado(VK_RETURN, 0);
+        return;
+    }
+    if (editandoNome) return;
+    if (telaMenu == MENU_ATRIBUICAO_CONTROLES && direcaoNova && e.dc) { moverDispositivo(JOYSTICK, e.dc); return; }
+    // Voltar antes de confirmar: Start e Select juntos contam como voltar.
+    if (direcaoNova) lerTeclado(e.dl < 0 ? VK_UP : e.dl > 0 ? VK_DOWN : e.dc < 0 ? VK_LEFT : VK_RIGHT, 0);
+    else if (novo(e.voltar, ant.voltar) || novo(e.select, ant.select)) {
+        if (telaMenu != MENU_PRINCIPAL) lerTeclado('M', 0);
+    }
+    else if ((novo(e.confirmar, ant.confirmar) || novo(e.start, ant.start)) && !e.select)
+        lerTeclado(telaMenu == MENU_PRINCIPAL ? '1' : VK_RETURN, 0);
 }
 
 void atualizarEscalaDpi(HWND janela) {
@@ -2771,6 +4265,7 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
         atualizarEscalaDpi(janela);
         carregarAssets();
         iniciarMusica();
+        atualizarEstadoControle(janela);
         SetTimer(janela, 1, PASSO_LOGICA_MS, nullptr);
         return 0;
     case WM_TIMER: {
@@ -2783,6 +4278,8 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
             } else return 0;
         }
         auto agora = chrono::steady_clock::now();
+        atualizarEstadoControle(janela);
+        processarControleNoMenu();
         int decorrido = static_cast<int>(chrono::duration_cast<chrono::milliseconds>(agora - ultimoInstante).count());
         ultimoInstante = agora;
         // Passos fixos pequenos: uma pausa de desenho nao muda a velocidade.
@@ -2811,18 +4308,25 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
         int x = static_cast<int>((static_cast<short>(LOWORD(lParam))-margemJanelaX) / escalaDpi);
         int y = static_cast<int>((static_cast<short>(HIWORD(lParam))-margemJanelaY) / escalaDpi);
         if (modo == MENU && telaMenu == MENU_PRINCIPAL) {
+            if(x>=44 && x<514 && y>=192 && y<267){lerTeclado('1',0);InvalidateRect(janela,nullptr,FALSE);return 0;}
             if(x>=550 && x<1036 && y>=604 && y<659) { lerTeclado('9',0); return 0; }
             if(x>=550 && x<1036 && y>=666 && y<727) { lerTeclado('8',0); return 0; }
             if(x>=550 && x<1036 && y>=738 && y<808) lerTeclado('7',0);
             else if (x >= 44 && x < 514 && y >= 287 && y < 629) {
                 int linha = (y-287)/57;
                 if ((y-287)%57 < 47) lerTeclado('1'+linha, 0);
-            } else if (x >= 44 && x < 514 && y >= 654 && y < 724) lerTeclado('P',0);
+            } else if (x >= 44 && x < 514 && y >= 646 && y < 737) lerTeclado('1',0);
             else if (x >= 44 && x < 210 && y >= 785 && y < 830) lerTeclado(VK_ESCAPE,0);
+        } else if(modo==MENU && telaMenu==MENU_RANKING){
+            if(!editandoNome){
+                if(y>=150 && y<550 && x>=20 && x<1050){auto r=lerRanking();int alvo=rankingSelecionado/10*10+(y-150)/40;if(alvo<int(r.size()))rankingSelecionado=alvo;}
+                else if(y>=610 && y<654){if(x>=20 && x<300)iniciarRenomeacaoRanking();else if(x>=320 && x<600)pedirExclusaoRanking();}
+                else if(y>=790)lerTeclado('M',0);
+            }
         } else if (modo == MENU && telaMenu == MENU_FASES) {
             if(x>=44 && x<1038 && y>=150 && y<636) {
-                int coluna=(x-44)/254,linha=(y-150)/254;
-                if(coluna<4 && linha<2 && (x-44)%254<232 && (y-150)%254<232) faseSelecionada=linha*4+coluna+1;
+                int coluna=(x-44)/202,linha=(y-150)/250;
+                if(coluna<5 && linha<2 && (x-44)%202<184 && (y-150)%250<232) faseSelecionada=linha*5+coluna+1;
             } else if(x>=44 && x<1036 && y>=683 && y<759) lerTeclado(VK_RETURN,0);
             else if(y>=780) lerTeclado('M',0);
         } else if (modo == MENU && telaMenu == MENU_PERSONAGENS) {
@@ -2831,6 +4335,24 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
                 if(coluna<4 && (x-44)%254<232) lerTeclado('1'+coluna,0);
             } else if(y>=100 && y<180) lerTeclado(VK_TAB,0);
             else if(y>=780) lerTeclado(VK_RETURN,0);
+        } else if (modo == MENU && telaMenu == MENU_QUANTIDADE_JOGADORES) {
+            if(y>=182 && y<582 && x>=44 && x<1055 && (x-44)%337<317) lerTeclado('1'+(x-44)/337,0);
+            else if(y>=780) lerTeclado(VK_ESCAPE,0);
+        } else if (modo == MENU && telaMenu == MENU_NOMES) {
+            if(x>=44 && x<604 && y>=150 && y<248) editarCampoNome(1);
+            else if(doisJogadores && x>=44 && x<604 && y>=268 && y<366) editarCampoNome(2);
+            else if(x>=44 && x<604 && y>=656 && y<720){if(!editandoNome)editarCampoNome(campoNome);lerTeclado(VK_RETURN,0);}
+            else if(y>=780){editandoNome=false;selecionarNome=false;avisoNome.clear();telaMenu=MENU_QUANTIDADE_JOGADORES;}
+        } else if (modo == MENU && telaMenu == MENU_ATRIBUICAO_CONTROLES) {
+            if(y>=512 && y<576 && x>=44 && x<1036 && (x-44)%506<486) lerTeclado('1'+(x-44)/506,0);
+            else if(y>=656 && y<720 && x>=44 && x<1036) lerTeclado(VK_RETURN,0);
+            else if(y>=140 && y<490 && x>=44 && x<1036 && controleConectado) {
+                // Clique numa coluna leva o teclado para aquele lado.
+                int coluna=(x-44)/346;
+                if(coluna==0) moverDispositivo(TECLADO,-1);
+                else if(coluna==2 || (coluna==1 && !doisJogadores)) moverDispositivo(TECLADO,1);
+            }
+            else if(y>=780) lerTeclado('M',0);
         } else if (modo == MENU && telaMenu == MENU_DIFICULDADE && y >= 182 && y < 562) {
             int coluna = (x-44)/338;
             if (x>=44 && coluna<3 && (x-44)%338<316) lerTeclado('1'+coluna,0);
@@ -2839,7 +4361,7 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
         return 0;
     }
     case WM_CHAR:
-        if (modo == MENU && telaMenu == MENU_PRINCIPAL)
+        if (modo == MENU && (telaMenu == MENU_NOMES || telaMenu==MENU_RANKING))
             digitarNomeJogador(static_cast<wchar_t>(wParam));
         InvalidateRect(janela, nullptr, FALSE);
         return 0;
@@ -2877,6 +4399,7 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
         executando = false;
         KillTimer(janela, 1);
         pararMusica();
+        encerrarControle();
         liberarAssets();
         PostQuitMessage(0);
         return 0;

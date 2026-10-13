@@ -6,6 +6,7 @@
 void prepararBoss() {
     prepararCenario({10,12},10,12,{8,8},8,8);
     inimigos.clear(); fogosBoss.clear(); areasBoss.clear(); bossConcluido=false; faseAtual=8;
+    jogadorCaido[0]=jogadorCaido[1]=false; jogadoresAtingidos=0;
     boss.vivo=true;boss.vida=VIDA_BOSS;
     boss.posicao={2,5};boss.destino=boss.posicao;boss.visualL=2;boss.visualC=5;
     boss.tempoProximoMovimentoMs=4000;boss.tempoProximoAtaqueMs=5000;
@@ -21,14 +22,15 @@ int main() {
     atualizarBoss(500);
     assert(abs(boss.visualC-5.75f)<.001f && boss.visualL==2);
     atualizarBoss(1000);
-    assert(!boss.movendo && boss.posicao.coluna==7 && boss.tempoProximoMovimentoMs==4000);
+    assert(!boss.movendo && boss.posicao.coluna==7 && boss.tempoProximoMovimentoMs==INTERVALO_MOVIMENTO_BOSS_MS);
     prepararBoss();
     jogador={2,8};jogadorVisualL=2;jogadorVisualC=8;
     assert(!iniciarAvancoBoss(0,1,2));
     prepararBoss();boss.tempoProximoAtaqueMs=0;
     atualizarBoss(8);assert(fogosBoss.size()==1);
     auto f=fogosBoss.front();assert(abs(hypot(f.vl,f.vc)-3.2f)<.001f);
-    assert(boss.tempoProximoAtaqueMs==4500);
+    assert(boss.tempoProximoAtaqueMs==INTERVALO_ATAQUE_BOSS_MS);
+    assert(abs(f.vida-(4.f*1.15f-.008f))<.001f);
     float distanciaAntes=hypot(f.l-10.5f,f.c-12.5f);
     atualizarBoss(100);f=fogosBoss.front();
     assert(hypot(f.l-10.5f,f.c-12.5f)<distanciaAntes);
@@ -44,7 +46,7 @@ int main() {
     boss.vida=4;boss.imunidadeMs=0;bombas.push_back(b);atingirBoss();
     assert(!boss.vivo&&bossConcluido&&portalAtivo);
     // Chefes nas quatro fases pares, portal somente depois da luta.
-    for(int fase=1;fase<=8;++fase){
+    for(int fase=1;fase<=TOTAL_FASES;++fase){
         prepararBoss();faseAtual=fase;boss=Boss{};bossIniciado=false;
         verificarVitoria();
         assert(boss.vivo==(fase%2==0));assert(portalAtivo==(fase%2!=0));
@@ -52,10 +54,11 @@ int main() {
     }
     for(int fase:{2,4,6}){
         prepararBoss();faseAtual=fase;criarPoderBoss();
+        if(fase==6){assert(projeteisBoss.empty() && boss.etapaHornet==H_PREP_AGULHA);atualizarBoss(752);}
         assert(areasBoss.empty() && fogosBoss.empty() && !projeteisBoss.empty());
-        assert(projeteisBoss.front().poder==indiceBoss());
-        assert(projeteisBoss.size()==size_t(fase==6?3:1));
-        for(auto& p:projeteisBoss)assert(p.avisoMs==700);
+        assert(projeteisBoss.front().poder==(fase==6?AGULHA:static_cast<PoderBoss>(indiceBoss())));
+        assert(projeteisBoss.size()==size_t(1));
+        for(auto& p:projeteisBoss)assert(p.avisoMs==(fase==6?150:700));
     }
     prepararBoss();faseAtual=2;criarPoderBoss();assert(projeteisBoss.front().arma==1);
     projeteisBoss.clear();criarPoderBoss();assert(projeteisBoss.front().arma==0);
@@ -105,7 +108,7 @@ int main() {
     atualizarBoss(500);verificarContatoJogadores();assert(estado==DERROTA);
     prepararBoss();doisJogadores=true;jogador2={5,5};jogador2VisualL=5;jogador2VisualC=5;
     projeteisBoss={{5.5f,5.5f,0,0,0,1,ENERGIA,0}};
-    atualizarProjeteisBoss(8);assert(estado==DERROTA && jogadoresAtingidos==2);
+    atualizarProjeteisBoss(8);assert(estado==JOGANDO && jogadoresAtingidos==2 && jogadorCaido[1]); // P2 sai, P1 segue
     prepararBoss();marioAliado.ativo=true;marioAliado.hp=3;marioAliado.l=5;marioAliado.c=5;
     projeteisBoss={{5.5f,5.5f,0,0,0,1,MACHADO,0}};
     atualizarProjeteisBoss(8);assert(marioAliado.hp==2 && estado==JOGANDO);

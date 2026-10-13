@@ -1,3 +1,76 @@
+## Diagnostico do 8BitDo por cabo (2026-10-13)
+
+- Windows: controle HID `VID_057E&PID_2009`, status OK. Diagnostico com a rotina real `atualizarEstadoControle` do jogo: `Pro Controller` enumerado por DirectInput, `Jogo reconheceu: SIM`, neutro em movimento e bomba. XInput sem controle conectado. Arquivo `testes/diagnosticar_controle.cpp` permite repetir a checagem sem abrir partida. Movimento e botoes fisicos ainda dependem de teste manual. Sem commit/push.
+
+## Joystick via SDL2 e fluxo de jogadores (2026-10-13, Claude Code)
+
+- **Substitui as secoes de controle abaixo** (P2 automatico, tecla P/C, "Jogo reconheceu: SIM"). O DirectInput lia o 8BitDo SN30 Pro (modo Switch, `VID_057E&PID_2009`) com eixos/botoes errados: movimento e bombas fantasmas. Agora a leitura preferencial e a SDL2 GameController (`SDL2.dll` oficial 2.30.9, zlib, `README-SDL2.txt`), carregada da pasta do exe; XInput e DirectInput ficam como fallback e o Pro Controller continua rejeitado no DirectInput. Diagnostico `testes/diagnosticar_sdl.cpp` com a DLL do projeto: `Nintendo Switch Pro Controller`, repouso `mov=(0,0)` sem fantasmas.
+- Fluxo novo: 1 JOGAR > quantidade (1/2) > "Quem usa cada controle?" (P1 | sem uso | P2, no estilo escolher lados) > personagem de cada jogador ativo > dificuldade > fase. 1P: teclado ou joystick. 2P: P1 teclado + P2 joystick ou o inverso; sem joystick, teclado dividido. Plugar controle nao cria jogador. Joystick so age com a janela em foco; se desconectar, o teclado assume o jogador dele. Menus navegaveis pelo joystick (direcional, A/Start, B/Select).
+- `testes/verificar_controle.cpp` reescrito; polimento atualizado ao fluxo e com previews das telas novas. Todas as suites passaram; `bomberman.exe` recompilado pelo `compilar.ps1`. Teste com botoes fisicos e aprovacao do usuario pendentes. Sem commit/push.
+
+## Controle P2 e aba de pontuacao (2026-10-13)
+
+- Deteccao automatica de XInput e controles genericos DirectInput do Windows. P1 teclado e P2 controle simultaneos; bomba em toque, direcional/analogico. Conectar durante partida solo ativa P2 em casa livre sem reiniciar; desconexao passa P2 as setas. Menu mostra controle detectado e P liga/desliga; quando nao ha controle, P alterna P2 no teclado. Alternancia de turnos nao foi implementada.
+- Menu [5] COMO PONTUAR mostra recompensas, bonus de portal com exemplo, Mario, cooperativo e ranking. Teste novo `testes/verificar_controle.cpp` sem janela/hardware valida conversoes, normalizacao, P1+P2 e fallback. Teste em controle real pendente. Sem commit/push ate aprovacao.
+
+## Menu, pontuacao e CRUD do ranking (2026-10-13)
+
+- Campo de nome explicito, clique seleciona o nome anterior, ENTER confirma, setas/Home/End/Backspace/Delete editam, Ctrl+A seleciona; cursor de insercao piscante. Atalhos do menu nao disparam durante digitacao. Ate 24 unidades UTF-16; UTF-8 no CSV, numeros, acentos, underline, traco e simbolos, incluindo aspas e ponto-e-virgula com escape CSV.
+- Ranking unico por nome, ignorando caixa e espacos redundantes. Registro repetido mostra pontuacao e pede confirmacao antes da partida; mantem o melhor resultado, desempate por menos bombas e movimentos. Paginas de dez entradas; setas/PgUp/PgDn selecionam. E renomeia (preserva pontos; bloqueia colisao); DEL exclui com confirmacao e aviso de perda, permitindo recomecar com o nome. Leitura aceita CSV antigo, consolida duplicados e ignora linhas invalidas. Gravacao atomica via arquivo temporario; backup .bak preserva arquivo anterior a primeira mudanca. Erro de salvamento exibido na tela final.
+- Pontos por inimigos/caixas/itens/chefes; andar e plantar bombas so contam estatisticas, sem desconto imediato. No portal soma max(0,500-movimentosFase-5*bombasFase), acumulando tentativas da mesma fase. Mario nao pontua por coletar macas nem acertos isolados; caixas/inimigos usam recompensas normais. Menu explica regras novas.
+- Testes novos verificar_ranking_pontuacao.cpp isolam CRUD e Unicode em CSV temporario, cursor/atalhos, movimento/bomba sem mudar placar, bonus e ataques Mario. Previews menu/cursor/ranking/edicao/pontuacao no polimento.
+- Usuario fechou os jogos e autorizou atualizar bomberman.exe principal. Build temporario bomberman_menu_ranking.exe anterior permanece, preferir principal. Sem commit/push ate aprovacao.
+- O modo de dois jogadores alternando turnos continua apenas como avaliacao de complexidade; nao foi pedido para implementacao.
+
+## Chefes reforcados e Mario mais lento (2026-10-10)
+
+- Campanha: vida dos chefes +15% (55/74/92/115/129), frequencia de ataque e movimento +15% por intervalo dividido por 1.15. Alcance de todos os projeteis +15% por tempo de voo, incluindo ida da agulha. Velocidades e avisos dos projeteis preservados.
+- Mira: dispersao dos leques -15%, antecipacao de movimento real por 15% do tempo estimado de voo (limitada a 0.75 casa). Movimento tem 15% de chance adicional de escolher o eixo do jogador. Inteligencia/precisao nao sao metricas percentuais mensuradas, sao parametros de ajuste.
+- Mario caminha a 3.57 casas/seg (-15%); macas e demais poderes preservados. Modo Insano preservado.
+- Bowser/Hornet atualizam direcao durante espera; Bowser usa espelhamento das poses laterais originais. Previews direita/esquerda no teste de polimento.
+- Principal bloqueado por dois processos abertos. Build novo bomberman_chefes.exe; substituir principal quando usuario fechar o jogo. Sem commit/push.
+
+## Caverna Congo substitui Laboratorio (2026-10-09)
+
+- Fase 7 agora CAVERNA CONGO, com materiais recortados do mapa SNES - Congo's Caper - Stages - 1-6 - 1st Boss.png. Piso escuro com tres variantes, paredes rochosas rosadas e blocos frageis ambar; segredos mantem a mesma aparencia.
+- Atlas assets/arena_congo.png reproduzivel por preparar_arena_congo.py (Pillow). Imagem original preservada; matriz, regras, dez fases e Modo Insano preservados.
+- Executavel principal recompilado. Sem commit/push ate aprovacao.
+
+## Contraste da Selva e cor dos inimigos (2026-10-09)
+
+Blocos quebraveis da Selva Viva agora usam madeira alaranjada em toda a casa,
+com veios preservados e borda clara. Bonus continuam sem pista visual.
+Escolher vermelho para P1 ou P2 ativo muda os inimigos para verde, preservando
+todas as animacoes; vermelho continua disponivel no seletor. Insano preservado.
+Executavel principal atualizado; testes de P1/P2 e preview visual no polimento.
+Sem commit/push ate aprovacao.
+
+## Hornet com etapas completas (2026-10-09)
+
+Ampliadas as sequencias do atlas existente: preparacao e recolhimento da agulha,
+fio original visivel, investida terrestre/aerea, salto/giro/pouso, guarda e
+contra-ataque apos dano, reacao e recuperacao. Ataques aguardam concluir a acao.
+No Facil, investida mais lenta e seis fios no giro. Colisao considera a altura
+durante voo, permitindo passar por baixo. Previews cobrem as 22 etapas.
+Usuario fechou o jogo e autorizou a substituicao: `bomberman.exe` recompilado com
+a Hornet atualizada. A copia separada `bomberman_hornet.exe` permanece na pasta.
+Sem commit/push; aguardar teste e aprovacao.
+
+## Atualizacao - Hornet, Bowser e dez fases (2026-10-09)
+
+**NAO fazer commit nem push: o usuario revogou a autorizacao anterior e quer testar e aprovar primeiro.** As autorizacoes de publicacao abaixo sao historicas.
+
+- Preservadas as fases 1-8. Hornet substitui a Hidra da Selva Viva (fase 6), assumindo que "Golem da floresta" se referia ao chefe dessa arena; Golem da Masmorra fica na fase 2.
+- Novas fases 9 Mundo Bomber (Quiz Caravan Cult Q) e 10 Vale Langrisser (Langrisser II). Mapas adaptados para tiles quadrados, com relva/trilhas, paredes e caixas, mantendo a matriz e regras existentes.
+- Bowser e o chefe da fase 10: fogo em leque, casco com investida, salto com rajada na aterrissagem e soco com onda de impacto.
+- Hornet: agulha com retorno, investida ortogonal anunciada, salto e fios em anel. Corpo de duas casas de largura; os demais chefes continuam com tres. Contato acompanha o corpo atual.
+- Atlas compactos conservam todas as 43 sequencias/243 quadros catalogados da Hornet e 58 sequencias/389 quadros do Bowser. A luta escolhe sequencias especificas de caminhada, preparo, ataque, salto, dano, recuperacao e derrota; nem toda pose catalogada e uma acao independente.
+- Derrota dos novos chefes dura 1050 ms antes de liberar portal. Mario e fogo da fase 8 conservados; fonte do Insano intacto.
+- Galeria de dez fases: 1-9 e 0 para fase 10; setas/mouse/Enter. Novos assets originais recuperados do arquivo externo sem mover/apagar as copias arquivadas.
+- Recortes reproduziveis: preparar_bosses_arenas.py + testes/catalogo_sprites_novos.json; metadados C++ em bosses_animacoes.h.
+- Testes adicionais em testes/verificar_novos_bosses.cpp. Previews offscreen em testes/preview_fase_9.png, preview_fase_10.png e preview_pose_boss_{6,10}_*.png. Nao automatizar janelas/teclado no computador compartilhado.
+- Suites verificadas: colisoes, boss fase 8, novos chefes, Mario aliado, polimento com previews e Insano original. Build com avisos habilitados; usuario ainda precisa avaliar o controle e as lutas jogando antes de autorizar publicacao.
+
 ## Organizacao e publicacao - 2026-10-09
 
 Usuario autorizou commit/push e pediu incluir os executaveis.

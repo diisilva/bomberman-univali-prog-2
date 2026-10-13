@@ -8,7 +8,7 @@ void prepararMario(){
     marioAliado.l=5;marioAliado.c=5;
 }
 int main(){
-    for(int fase=1;fase<=8;++fase){faseAtual=fase;modo=MANUAL;dificuldade=FACIL;montarFase();
+    for(int fase=1;fase<=TOTAL_FASES;++fase){faseAtual=fase;modo=MANUAL;dificuldade=FACIL;montarFase();
         assert(marioAliado.escondido==(fase%2==0));assert(!marioAliado.ativo);
         if(marioAliado.escondido)assert(mapa[marioAliado.bloco.linha][marioAliado.bloco.coluna]==PAREDE_FRAGIL);
     }
@@ -17,7 +17,7 @@ int main(){
     assert(marioAliado.ativo&&!marioAliado.escondido&&marioAliado.hp==3&&marioAliado.imunidade==2);
     ferirMario();assert(marioAliado.hp==3);
     prepararMario();marioAliado.posicao={5,6};marioAliado.movendo=3;marioAliado.recarga=100;marioAliado.pensar=100;
-    atualizarMario(100);assert(abs(marioAliado.c-5.42f)<.001f && marioAliado.l==5);
+    atualizarMario(100);assert(abs(marioAliado.c-5.3213f)<.001f && marioAliado.l==5);
     prepararMario();inimigos={{{5,8},true,100000}};inimigos[0].visualL=5;inimigos[0].visualC=8;
     lancarMacaMario();assert(macasMario.size()==1 && marioAliado.recarga==1.05f && marioAliado.pose==.28f);
     auto maca=macasMario[0];assert(maca.duracao>=.65f && maca.duracao<=1.45f && maca.tx==8.5f);
@@ -39,5 +39,5 @@ int main(){
     assert(!iniciarAvancoBoss(0,1,2)); // nao atravessa o aliado
     marioAliado.ativo=false;marioAliado.escondido=true;marioAliado.bloco={5,5};
     assert(!iniciarAvancoBoss(0,1,2)); // conserva o bloco da surpresa
-    std::cout<<"Mario aliado: surpresa, movimento 4.2, macas, dano e tres vidas OK\n";
+    std::cout<<"Mario aliado: surpresa, movimento 3.21 (10% mais lento), macas, dano e tres vidas OK\n";
 }

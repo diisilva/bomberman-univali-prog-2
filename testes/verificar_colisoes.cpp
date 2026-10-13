@@ -15,6 +15,8 @@ void prepararCenario(Posicao pos, float l, float c, Posicao alvoInimigo, float i
     marioAliado=MarioAliado{};macasMario.clear();macasNoChao.clear();areasBoss.clear();fogosBoss.clear();blocosBonus.clear();projeteisBoss.clear();impactosBoss.clear();
     imuneAPropriaBomba = false; vidaPerdida = false; vidas = 3;
     registroSalvo = false; portalAtivo = false; jogadoresAtingidos=0;
+    jogadorCaido[0] = jogadorCaido[1] = false;
+    vidasJogador[0] = vidasJogador[1] = VIDAS_POR_JOGADOR; imunidadeJogadorMs[0] = imunidadeJogadorMs[1] = 0;
 }
 
 int main() {
@@ -81,7 +83,10 @@ int main() {
     // P2 participa apenas no manual cooperativo, nunca como jogador fantasma no auto.
     prepararCenario({1,1},1,1,{5,5},5,5);
     doisJogadores=true; jogador2={5,5}; jogador2VisualL=5; jogador2VisualC=5;
-    atualizar(8); assert(estado == DERROTA && jogadoresAtingidos==2);
+    // Com dois, cada um perde uma das suas vidas e o outro continua jogando.
+    atualizar(8); assert(estado == JOGANDO && jogadorCaido[1] && vidasJogador[1] == 2 && vidas == 3);
+    jogadorVisualL=5; jogadorVisualC=5; jogador={5,5};
+    atualizar(8); assert(estado == JOGANDO && jogadorCaido[0] && vidasJogador[0] == 2 && vidas == 3);
     prepararCenario({1,1},1,1,{5,5},5,5);
     modo=AUTOMATICO; doisJogadores=true; tempoMovimentoMs=100000;
     atualizar(8); assert(estado == JOGANDO);

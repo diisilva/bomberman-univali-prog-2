@@ -4,6 +4,8 @@
 *.o
 *.obj
 ranking.csv
+ranking.csv.bak
+ranking.csv.tmp
 testes/preview_*.png
 testes/preview_*.gif
 testes/preview_*.png.txt
