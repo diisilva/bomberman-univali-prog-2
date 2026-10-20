@@ -22,6 +22,44 @@ O build gera `bomberman.exe` e `modo_insano.exe`. Feche instâncias anteriores a
 
 Assets são carregados uma vez, a partir da pasta do executável. Mantenha `assets/`, `assets_otimizados/` e os dois executáveis juntos. A janela permite redimensionar e maximizar, mantendo a proporção e centralizando o desenho.
 
+## Linux (Wine e compilacao com MinGW)
+
+O jogo usa APIs do Windows. No Linux, MinGW gera executaveis Windows e Wine os
+executa. O GCC nativo do Linux nao fornece `windows.h`, GDI+ ou DirectInput.
+
+No Zorin/Ubuntu, instale as ferramentas no terminal:
+
+```bash
+sudo apt update
+sudo apt install cmake g++-mingw-w64-x86-64 wine
+```
+
+Na raiz do projeto, compile em uma pasta nova, sem reutilizar o cache de Windows
+em `cmake-build-debug/`:
+
+```bash
+cmake -S . -B build-linux -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-linux.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build build-linux -j2
+wine ./build-linux/bomberman.exe
+```
+
+O build copia os assets e `SDL2.dll` para `build-linux/` e gera os dois jogos.
+Para abrir o Insano diretamente, use `wine ./build-linux/modo_insano.exe`.
+A campanha tenta Segoe UI, Liberation Sans, DejaVu Sans, Arial e a fonte sans
+serif generica do GDI+, evitando depender apenas da Segoe UI no Wine.
+Essa correcao exige executar o novo binario de `build-linux/`; os `.exe` da
+raiz nao sao substituidos pelo CMake.
+
+No CLion, abra o projeto pelo `CMakeLists.txt`. Em **Settings > Build, Execution,
+Deployment > CMake**, use `build-linux` como **Build directory** e as opcoes:
+
+```text
+-DCMAKE_TOOLCHAIN_FILE=cmake/mingw-linux.cmake -DCMAKE_BUILD_TYPE=Release
+```
+
+Recarregue o CMake. O arquivo de toolchain seleciona o compilador Windows e seus
+headers, permitindo que a IDE resolva os includes. Execute pelo Wine no terminal.
+
 ## Menu
 
 | Opção | Ação |

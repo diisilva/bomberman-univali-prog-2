@@ -98,9 +98,9 @@ int main(){
     assert(estatisticas.movimentosFase>=2);
     entradaControle=direcao(0,0,true);
     processarMovimentoContinuo();
-    assert(bombas.size()==1 && iguais(bombas[0].posicao,jogador2));
+    assert(bombas.size()==1 && iguais(bombas[0].posicao,Posicao{7,7})); // Casa de saida de P2.
     // Limite por jogador: a bomba de P2 nao impede a de P1.
-    lerTeclado(' ',0);assert(bombas.size()==2 && iguais(bombas[1].posicao,jogador) && bombas[1].dono==0 && bombas[0].dono==1);
+    lerTeclado(' ',0);assert(bombas.size()==2 && iguais(bombas[1].posicao,Posicao{5,5}) && bombas[1].dono==0 && bombas[0].dono==1);
     lerTeclado(' ',0);assert(bombas.size()==2); // P1 ja usou a sua
 
     // 2 jogadores, P1 joystick + P2 teclado: o teclado inteiro e de P2.
@@ -108,18 +108,39 @@ int main(){
     teclaPressionada['D']=true;entradaControle=direcao(0,-1);
     processarMovimentoContinuo();
     assert(jogador.coluna==4 && jogador2.coluna==8);
-    lerTeclado(' ',0);assert(bombas.size()==1 && iguais(bombas[0].posicao,jogador2));
+    lerTeclado(' ',0);assert(bombas.size()==1 && iguais(bombas[0].posicao,Posicao{7,7}));
     entradaControle=direcao(0,0,true);processarMovimentoContinuo();
-    assert(bombas.size()==2 && iguais(bombas[1].posicao,jogador));
+    assert(bombas.size()==2 && iguais(bombas[1].posicao,Posicao{5,5}));
 
     // 2 jogadores no teclado: P1 WASD/Espaco, P2 setas/Enter.
     prepararArena();controleConectado=false;dispositivoP1=dispositivoP2=TECLADO;
     teclaPressionada['D']=true;teclaPressionada[VK_DOWN]=true;
     processarMovimentoContinuo();
     assert(jogador.coluna==6 && jogador.linha==5 && jogador2.linha==8 && jogador2.coluna==7);
-    lerTeclado(VK_RETURN,0);assert(bombas.size()==1 && iguais(bombas[0].posicao,jogador2));
-    lerTeclado(' ',0);assert(bombas.size()==2 && iguais(bombas[1].posicao,jogador)); // cada um com a sua
+    lerTeclado(VK_RETURN,0);assert(bombas.size()==1 && iguais(bombas[0].posicao,Posicao{7,7}));
+    lerTeclado(' ',0);assert(bombas.size()==2 && iguais(bombas[1].posicao,Posicao{5,5})); // cada um com a sua
     lerTeclado(VK_RETURN,0);assert(bombas.size()==2);
+
+    // Joystick: inverter e plantar no mesmo tick durante a caminhada.
+    prepararArena();doisJogadores=false;controleConectado=true;dispositivoP1=JOYSTICK;
+    entradaControle=direcao(0,1);processarMovimentoContinuo();
+    avancarVisual(jogadorVisualL,jogadorVisualC,jogador,100);
+    entradaControle=direcao(0,-1,true);processarMovimentoContinuo();
+    assert(iguais(jogador,Posicao{5,5}) && jogadorVisualC>5);
+    assert(bombas.size()==1 && iguais(bombas[0].posicao,Posicao{5,5}));
+    avancarVisual(jogadorVisualL,jogadorVisualC,jogador,1000);
+    processarMovimentoContinuo();assert(iguais(jogador,Posicao{5,4}) && bombas.size()==1);
+
+    // Teclado: plantar antes do tick que recebe a inversao.
+    prepararArena();controleConectado=false;dispositivoP1=TECLADO;
+    teclaPressionada['D']=true;processarMovimentoContinuo();
+    avancarVisual(jogadorVisualL,jogadorVisualC,jogador,100);
+    teclaPressionada['D']=false;teclaPressionada['A']=true;
+    lerTeclado(' ',0);processarMovimentoContinuo();
+    assert(iguais(jogador,Posicao{5,5}) && jogadorVisualC>5);
+    assert(bombas.size()==1 && iguais(bombas[0].posicao,Posicao{5,5}));
+    avancarVisual(jogadorVisualL,jogadorVisualC,jogador,1000);
+    processarMovimentoContinuo();assert(iguais(jogador,Posicao{5,4}));
 
     // Demonstracao: o joystick nao interfere e so existe um personagem.
     prepararArena();controleConectado=true;dispositivoP1=JOYSTICK;
