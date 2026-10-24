@@ -20,6 +20,91 @@ void prepararCenario(Posicao pos, float l, float c, Posicao alvoInimigo, float i
 }
 
 int main() {
+    // A bomba fica na casa de saida durante todo o passo, inclusive se
+    // movimento e bomba forem recebidos no mesmo tick (como no joystick).
+    const Posicao direcoes[] = {{0,1},{0,-1},{1,0},{-1,0}};
+    for (bool p2 : {false, true}) for (Posicao d : direcoes) {
+        for (float progresso : {0.f, .25f, .75f, .999f, 1.f}) {
+            prepararCenario({5,5},5,5,{8,8},8,8);
+            bombasExtras=0; temBombaRelogio=false; estatisticas={};
+            doisJogadores=p2; jogador2={5,5}; jogador2VisualL=5; jogador2VisualC=5;
+            tempoMovimentoMs=tempoMovimentoMs2=0;
+            if(p2) moverJogador2(d.linha,d.coluna);
+            else moverJogador(d.linha,d.coluna);
+            Posicao destino{5+d.linha,5+d.coluna};
+            assert(iguais(p2 ? jogador2 : jogador,destino));
+            float& l=p2 ? jogador2VisualL : jogadorVisualL;
+            float& c=p2 ? jogador2VisualC : jogadorVisualC;
+            l=5+d.linha*progresso; c=5+d.coluna*progresso;
+            if(p2) colocarBomba2(); else colocarBomba();
+            Posicao esperada=progresso<1 ? Posicao{5,5} : destino;
+            assert(bombas.size()==1 && iguais(bombas[0].posicao,esperada));
+            assert(bombas[0].dono==(p2 ? 1 : 0));
+            if(p2) colocarBomba2(); else colocarBomba();
+            assert(bombas.size()==1 && estatisticas.bombasUsadas==1);
+            if(progresso==0) {
+                // A bomba nao bloqueia o passo em curso; ao chegar, o
+                // jogador pode continuar, mas nao voltar para cima dela.
+                avancarVisual(l,c,destino,1000);
+                assert(visualNoDestino(l,c,destino));
+                tempoMovimentoMs=tempoMovimentoMs2=0;
+                if(p2) moverJogador2(-d.linha,-d.coluna);
+                else moverJogador(-d.linha,-d.coluna);
+                assert(iguais(p2 ? jogador2 : jogador,destino));
+                if(p2) moverJogador2(d.linha,d.coluna);
+                else moverJogador(d.linha,d.coluna);
+                assert(iguais(p2 ? jogador2 : jogador,Posicao{5+2*d.linha,5+2*d.coluna}));
+            }
+        }
+    }
+    // Inverter antes do fim do passo nao deve completar o avanco e deixar
+    // a bomba bloqueando a volta. Cobrir bomba antes/depois da inversao.
+    for (bool p2 : {false,true}) for (Posicao d : direcoes)
+        for (float progresso : {0.f,.1f,.5f,.9f}) for (bool bombaAntes : {false,true}) {
+            prepararCenario({5,5},5,5,{8,8},8,8);
+            bombasExtras=0; temBombaRelogio=false; estatisticas={};
+            doisJogadores=p2; jogador2={5,5}; jogador2VisualL=5; jogador2VisualC=5;
+            tempoMovimentoMs=tempoMovimentoMs2=0;
+            auto mover=[&](int sentido) {
+                if(p2) moverJogador2(d.linha*sentido,d.coluna*sentido);
+                else moverJogador(d.linha*sentido,d.coluna*sentido);
+            };
+            auto plantar=[&]() { if(p2) colocarBomba2(); else colocarBomba(); };
+            mover(1);
+            float& l=p2 ? jogador2VisualL : jogadorVisualL;
+            float& c=p2 ? jogador2VisualC : jogadorVisualC;
+            l=5+d.linha*progresso; c=5+d.coluna*progresso;
+            if(bombaAntes) {
+                plantar();
+                bombas[0].dono=p2 ? 0 : 1;
+                mover(-1); // Nao vale atravessar a bomba do outro jogador.
+                assert(iguais(p2 ? jogador2 : jogador,Posicao{5+d.linha,5+d.coluna}));
+                bombas[0].dono=p2 ? 1 : 0;
+            }
+            // Curva perpendicular continua esperando o centro da casa.
+            if(p2) moverJogador2(-d.coluna,d.linha);
+            else moverJogador(-d.coluna,d.linha);
+            assert(iguais(p2 ? jogador2 : jogador,Posicao{5+d.linha,5+d.coluna}));
+            mover(-1);
+            assert(iguais(p2 ? jogador2 : jogador,Posicao{5,5}));
+            assert(abs(l-(5+d.linha*progresso))<.0001f);
+            assert(abs(c-(5+d.coluna*progresso))<.0001f); // Sem teleporte.
+            if(!bombaAntes) plantar();
+            assert(bombas.size()==1 && iguais(bombas[0].posicao,Posicao{5,5}));
+            if(progresso>0) {
+                mover(1); mover(-1); // Pode mudar de ideia mais de uma vez.
+                assert(iguais(p2 ? jogador2 : jogador,Posicao{5,5}));
+            }
+            avancarVisual(l,c,p2 ? jogador2 : jogador,1000);
+            tempoMovimentoMs=tempoMovimentoMs2=0;
+            mover(-1); // Sair da bomba na direcao escolhida.
+            Posicao saida{5-d.linha,5-d.coluna};
+            assert(iguais(p2 ? jogador2 : jogador,saida));
+            avancarVisual(l,c,saida,1000);
+            tempoMovimentoMs=tempoMovimentoMs2=0;
+            mover(1); // Depois de sair, a bomba volta a bloquear.
+            assert(iguais(p2 ? jogador2 : jogador,saida));
+        }
     // Correcao publicada no remoto: pode sair da bomba, mas nao entrar de novo.
     prepararCenario({5,5},5,5,{8,8},8,8);
     Bomba bloqueio;bloqueio.ativa=true;bloqueio.posicao={5,5};bombas.push_back(bloqueio);
@@ -90,6 +175,6 @@ int main() {
     prepararCenario({1,1},1,1,{5,5},5,5);
     modo=AUTOMATICO; doisJogadores=true; tempoMovimentoMs=100000;
     atualizar(8); assert(estado == JOGANDO);
-    std::cout << "OK: separacao horizontal/vertical/diagonal, cruzamento, chamas e P2.\n";
+    std::cout << "OK: bombas na casa de saida (4 direcoes, P1/P2), separacao, cruzamento, chamas e P2.\n";
     return 0;
 }

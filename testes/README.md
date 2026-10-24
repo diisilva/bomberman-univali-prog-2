@@ -48,9 +48,17 @@ g++ -std=c++17 -O2 -Wall -Wextra -pedantic testes/verificar_colisoes.cpp -o veri
 .\verificacao_colisoes.exe
 ```
 
-Verifica duas casas de separacao vertical/horizontal e uma em cada eixo,
+Verifica bombas na casa de saida durante o passo nas quatro direcoes, para
+P1/P2, e na nova casa apos a chegada; permite sair e bloqueia voltar sobre a
+bomba. Cobre tambem duas casas de separacao vertical/horizontal e uma em cada eixo,
 cruzamentos, inimigos e boss, casas vizinhas, chamas, imunidade, P2 cooperativo
 e ausencia de dano de um P2 inativo no automatico.
+
+Tambem verifica inversao imediata durante o passo, antes/depois de plantar a
+bomba, sem teleporte e com mudancas repetidas de sentido. P1/P2 podem cancelar
+a saida da propria bomba enquanto o passo esta em curso; depois de sair, nao
+podem voltar sobre ela. Bombas de outro jogador bloqueiam a volta e curvas
+perpendiculares continuam esperando o centro da casa.
 
 Chefes da campanha e Mario aliado (na raiz, sem abrir janela):
 

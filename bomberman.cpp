@@ -282,6 +282,8 @@ int quadroAnimJogador2 = 0;
 // Posicao visual dos jogadores (ver comentario em Inimigo::visualL/visualC).
 float jogadorVisualL = 1, jogadorVisualC = 1;
 float jogador2VisualL = 1, jogador2VisualC = 2;
+// Casa de saida preservada mesmo quando o jogador inverte um passo.
+Posicao origemPassoJogador[2]{{1,1},{1,2}};
 float distanciaAnimacaoJogador = 0, distanciaAnimacaoJogador2 = 0;
 int tempoFimMs = 0;
 int jogadoresAtingidos = 0;
@@ -1356,6 +1358,23 @@ bool podeAndarPara(Posicao destino) {
             mapa[destino.linha][destino.coluna] == PAREDE_FRAGIL);
 }
 
+bool podeInverterPasso(Posicao alvo, float l, float c, int dl, int dc, int dono) {
+    // Apenas voltar no mesmo segmento; curvas esperam o centro da casa.
+    if (!((dl == 0 && l == alvo.linha && dc * (alvo.coluna-c) < 0) ||
+          (dc == 0 && c == alvo.coluna && dl * (alvo.linha-l) < 0))) return false;
+    Posicao volta{alvo.linha+dl, alvo.coluna+dc};
+    if (podeAndarPara(volta)) return true;
+    // Ainda nao terminou de sair da propria bomba: pode cancelar a saida.
+    // Depois de chegar em outra casa, esta excecao deixa de se aplicar.
+    if (!iguais(volta,origemPassoJogador[dono]) || bloqueadoBoss(volta) ||
+        !(livre(volta.linha,volta.coluna) ||
+          (atravessaBlocoQuebravel && dentro(volta.linha,volta.coluna) &&
+           mapa[volta.linha][volta.coluna] == PAREDE_FRAGIL))) return false;
+    for (const Bomba& b : bombas)
+        if (b.ativa && iguais(b.posicao,volta)) return b.dono == dono && !b.explodindo;
+    return false;
+}
+
 void atingirSePerigoso(float l, float c, int numero = 1) {
     if (jogadorEmCampo(numero) && (contatoComInimigo(l,c) || donoDaChamaNoJogador(l,c,numero) >= 0)) derrubarJogador(numero);
 }
@@ -1369,12 +1388,18 @@ void avancarOuVencerSePortal(Posicao pos, int dono = 0) {
 }
 
 void moverJogador(int dl, int dc) {
-    if (estado != JOGANDO || jogadorCaido[0] || tempoMovimentoMs > 0 ||
-        !visualNoDestino(jogadorVisualL, jogadorVisualC, jogador)) return;
+    if (estado != JOGANDO || jogadorCaido[0]) return;
+    bool emPasso = !visualNoDestino(jogadorVisualL,jogadorVisualC,jogador);
+    if (emPasso) {
+        if (!podeInverterPasso(jogador,jogadorVisualL,jogadorVisualC,dl,dc,0)) return;
+    } else {
+        if (tempoMovimentoMs > 0) return;
+        origemPassoJogador[0] = jogador;
+    }
     direcaoJogador = {dl, dc};
     Posicao origem = jogador;
     Posicao destino{jogador.linha + dl, jogador.coluna + dc};
-    if (podeAndarPara(destino)) jogador = destino;
+    if (emPasso || podeAndarPara(destino)) jogador = destino;
     if (!iguais(origem, jogador)) {
         estatisticas.movimentos++;
         estatisticas.movimentosFase++;
@@ -1382,7 +1407,7 @@ void moverJogador(int dl, int dc) {
         quadroAnimJogador = (quadroAnimJogador + 1) % QUADROS_POR_DIRECAO;
     }
     atingirSePerigoso(jogadorVisualL,jogadorVisualC,1);
-    tempoMovimentoMs = iguais(origem,jogador) ? 0 : INTERVALO_MOVIMENTO_MS;
+    tempoMovimentoMs = iguais(origem,jogador) || emPasso ? 0 : INTERVALO_MOVIMENTO_MS;
 }
 
 // Jogador 2 (cooperativo): mesmo comportamento do jogador 1, so que grava em
@@ -1390,12 +1415,18 @@ void moverJogador(int dl, int dc) {
 // os mesmos do time (atingirSePerigoso/coletarItensEm/avancarOuVencerSePortal
 // ja sao genericos o bastante pra servir aos dois).
 void moverJogador2(int dl, int dc) {
-    if (estado != JOGANDO || jogadorCaido[1] || tempoMovimentoMs2 > 0 ||
-        !visualNoDestino(jogador2VisualL, jogador2VisualC, jogador2)) return;
+    if (estado != JOGANDO || jogadorCaido[1]) return;
+    bool emPasso = !visualNoDestino(jogador2VisualL,jogador2VisualC,jogador2);
+    if (emPasso) {
+        if (!podeInverterPasso(jogador2,jogador2VisualL,jogador2VisualC,dl,dc,1)) return;
+    } else {
+        if (tempoMovimentoMs2 > 0) return;
+        origemPassoJogador[1] = jogador2;
+    }
     direcaoJogador2 = {dl, dc};
     Posicao origem = jogador2;
     Posicao destino{jogador2.linha + dl, jogador2.coluna + dc};
-    if (podeAndarPara(destino)) jogador2 = destino;
+    if (emPasso || podeAndarPara(destino)) jogador2 = destino;
     if (!iguais(origem, jogador2)) {
         estatisticas.movimentos++;
         estatisticas.movimentosFase++;
@@ -1403,7 +1434,7 @@ void moverJogador2(int dl, int dc) {
         quadroAnimJogador2 = (quadroAnimJogador2 + 1) % QUADROS_POR_DIRECAO;
     }
     atingirSePerigoso(jogador2VisualL,jogador2VisualC,2);
-    tempoMovimentoMs2 = iguais(origem,jogador2) ? 0 : INTERVALO_MOVIMENTO_MS;
+    tempoMovimentoMs2 = iguais(origem,jogador2) || emPasso ? 0 : INTERVALO_MOVIMENTO_MS;
 }
 
 void iniciarExplosaoBomba(Bomba& b);
@@ -1425,8 +1456,14 @@ void colocarBombaEm(Posicao pos, int dono = 0) {
     estatisticas.bombasJogador[dono]++;
 }
 
-void colocarBomba() { colocarBombaEm(jogador, 0); }
-void colocarBomba2() { colocarBombaEm(jogador2, 1); }
+// O destino logico e reservado no inicio do passo. A bomba fica na casa
+// de saida ate o corpo terminar de chegar, em qualquer direcao.
+Posicao casaParaBomba(float visualL, float visualC, Posicao destino, int dono) {
+    return visualNoDestino(visualL,visualC,destino) ? destino : origemPassoJogador[dono];
+}
+
+void colocarBomba() { colocarBombaEm(casaParaBomba(jogadorVisualL, jogadorVisualC, jogador, 0), 0); }
+void colocarBomba2() { colocarBombaEm(casaParaBomba(jogador2VisualL, jogador2VisualC, jogador2, 1), 1); }
 
 // Bomba-relogio (item): nao explode sozinha, so quando o jogador aperta a
 // tecla de detonar - todas as bombas-relogio ativas do jogador explodem
@@ -2828,9 +2865,17 @@ void garantirBuffer(HDC referencia, int largura, int altura) {
 Gdiplus::Font* obterFonte(int tamanhoPx) {
     auto it = cacheFontes.find(tamanhoPx);
     if (it != cacheFontes.end()) return it->second.get();
-    const wchar_t* nomeFonte = L"Segoe UI";
-    auto fonte = make_unique<Gdiplus::Font>(nomeFonte, tamanhoPx, Gdiplus::FontStyleRegular,
-                                            Gdiplus::UnitPixel);
+    // Segoe UI pode nao existir no Wine. Nao guardar uma fonte invalida no cache.
+    unique_ptr<Gdiplus::Font> fonte;
+    for (const wchar_t* nome : {L"Segoe UI", L"Liberation Sans", L"DejaVu Sans", L"Arial"}) {
+        fonte = make_unique<Gdiplus::Font>(nome, tamanhoPx, Gdiplus::FontStyleRegular,
+                                         Gdiplus::UnitPixel);
+        if (fonte->GetLastStatus() == Gdiplus::Ok) break;
+    }
+    if (fonte->GetLastStatus() != Gdiplus::Ok) {
+        fonte = make_unique<Gdiplus::Font>(Gdiplus::FontFamily::GenericSansSerif(),
+                    tamanhoPx, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    }
     Gdiplus::Font* ponteiro = fonte.get();
     cacheFontes[tamanhoPx] = move(fonte);
     return ponteiro;
