@@ -10,6 +10,7 @@ WASD/setas: mover | Espaco: bomba | R: reiniciar | Q ou ESC: sair
 
 #include <windows.h>
 #include <mmsystem.h>
+#include <digitalv.h>
 #include <gdiplus.h>
 #include <dinput.h>
 #include <xinput.h>
@@ -2735,70 +2736,52 @@ void carregarAssets() {
     prepararTemaFase2Compacto();
 }
 
-#pragma pack(push, 1)
-struct CabecalhoWav {
-    char riff[4] = {'R', 'I', 'F', 'F'};
-    uint32_t tamanhoArquivo = 0;
-    char onda[4] = {'W', 'A', 'V', 'E'};
-    char fmt[4] = {'f', 'm', 't', ' '};
-    uint32_t tamanhoFmt = 16;
-    uint16_t formato = 1; // PCM
-    uint16_t canais = 1;
-    uint32_t amostragem = 11025;
-    uint32_t bytesPorSegundo = 11025;
-    uint16_t alinhamentoBloco = 1;
-    uint16_t bitsPorAmostra = 8;
-    char dataTag[4] = {'d', 'a', 't', 'a'};
-    uint32_t tamanhoDados = 0;
-};
-#pragma pack(pop)
+// MCI reproduz MP3 usando o winmm, ja vinculado ao jogo.
+MCIDEVICEID dispositivoMusica = 0;
+wstring faixaMusicaAtual;
 
-// Gera uma trilha curta em loop por codigo (onda quadrada, estilo chiptune),
-// sem depender de nenhum arquivo de audio externo nem de internet - resolve
-// o item "colocar musica no jogo" com um .wav PCM 8 bits montado em memoria.
-vector<unsigned char> gerarMusicaProcedural() {
-    const int amostragem = 11025;
-    const double duracaoNota = 0.17;
-    // Melodia curta e simples (G4 A4 C5 A4 G4 F4 G4 C5), repete em loop pelo
-    // proprio SND_LOOP do PlaySound - nao precisa duplicar os dados aqui.
-    const double notas[] = {392.00, 440.00, 523.25, 440.00, 392.00, 349.23, 392.00, 523.25};
-    int amostrasPorNota = static_cast<int>(amostragem * duracaoNota);
-    vector<unsigned char> amostras;
-    amostras.reserve(amostrasPorNota * size(notas));
-    for (double frequencia : notas) {
-        for (int i = 0; i < amostrasPorNota; i++) {
-            double t = static_cast<double>(i) / amostragem;
-            double ciclo = fmod(t * frequencia, 1.0);
-            double onda = ciclo < 0.5 ? 1.0 : -1.0;
-            // Fade-out suave no fim de cada nota pra evitar estalo na troca.
-            double envelope = 1.0 - (static_cast<double>(i) / amostrasPorNota) * 0.4;
-            int amostra = static_cast<int>(128 + onda * envelope * 40);
-            amostra = max(0, min(255, amostra));
-            amostras.push_back(static_cast<unsigned char>(amostra));
-        }
-    }
-
-    CabecalhoWav cabecalho;
-    cabecalho.tamanhoDados = static_cast<uint32_t>(amostras.size());
-    cabecalho.tamanhoArquivo = static_cast<uint32_t>(sizeof(CabecalhoWav) - 8 + amostras.size());
-    vector<unsigned char> arquivo(sizeof(CabecalhoWav) + amostras.size());
-    memcpy(arquivo.data(), &cabecalho, sizeof(CabecalhoWav));
-    memcpy(arquivo.data() + sizeof(CabecalhoWav), amostras.data(), amostras.size());
-    return arquivo;
-}
-
-// Precisa ficar viva enquanto a musica toca (PlaySound com SND_MEMORY le
-// direto deste buffer, inclusive repetidamente por causa do SND_LOOP).
-vector<unsigned char> bufferMusica;
-
-void iniciarMusica() {
-    bufferMusica = gerarMusicaProcedural();
-    PlaySoundW(reinterpret_cast<LPCWSTR>(bufferMusica.data()), nullptr,
-              SND_MEMORY | SND_ASYNC | SND_LOOP | SND_NODEFAULT);
+wstring musicaDaTela() {
+    if (modo == MENU) return L"menu.mp3";
+    if (faseAtual == TOTAL_FASES) return L"bowser_phase.mp3";
+    return L"phase_" + to_wstring(faseAtual) + L".mp3";
 }
 
 void pararMusica() {
-    PlaySoundW(nullptr, nullptr, 0);
+    if (dispositivoMusica) {
+        mciSendCommandW(dispositivoMusica, MCI_CLOSE, MCI_WAIT, 0);
+        dispositivoMusica = 0;
+    }
+    faixaMusicaAtual.clear();
+}
+
+void iniciarMusica() {
+    wstring faixa = musicaDaTela();
+    // O timer acompanha as transicoes sem reiniciar a faixa a cada quadro.
+    if (faixa == faixaMusicaAtual) return;
+    pararMusica();
+    faixaMusicaAtual = faixa;
+    wstring caminho = pastaDoExecutavel() + L"\\assets\\audio\\" + faixa;
+    MCI_OPEN_PARMSW abertura{};
+    abertura.lpstrDeviceType = L"mpegvideo";
+    abertura.lpstrElementName = caminho.c_str();
+    MCIERROR erro = mciSendCommandW(0, MCI_OPEN,
+        MCI_OPEN_TYPE | MCI_OPEN_ELEMENT | MCI_WAIT,
+        reinterpret_cast<DWORD_PTR>(&abertura));
+    if (!erro) {
+        dispositivoMusica = abertura.wDeviceID;
+        MCI_PLAY_PARMS reproducao{};
+        erro = mciSendCommandW(dispositivoMusica, MCI_PLAY, MCI_DGV_PLAY_REPEAT,
+                              reinterpret_cast<DWORD_PTR>(&reproducao));
+    }
+    if (erro) {
+        // Evita tentar reabrir um arquivo ausente/invalido a cada tick.
+        wchar_t detalhe[256]{};
+        mciGetErrorStringW(erro, detalhe, 256);
+        wstring mensagem = L"Falha ao tocar " + caminho + L": " + detalhe + L"\n";
+        OutputDebugStringW(mensagem.c_str());
+        pararMusica();
+        faixaMusicaAtual = faixa;
+    }
 }
 
 void liberarBuffer() {
@@ -4334,6 +4317,7 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
             atualizar(8);
             acumuladoMs -= 8;
         }
+        if (!processoInsano) iniciarMusica();
         InvalidateRect(janela, nullptr, FALSE);
         return 0;
     }
