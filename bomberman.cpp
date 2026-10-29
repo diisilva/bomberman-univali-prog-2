@@ -206,11 +206,8 @@ vector<Bomba> bombas;
 EstadoJogo estado = JOGANDO;
 ModoJogo modo = MENU;
 int pontos = 0;
-int alcanceExplosao = ALCANCE_EXPLOSAO_INICIAL;
 int tempoMovimentoMs = 0;
 bool executando = true;
-bool possuiCartaChute = false;
-bool possuiCartaTeleporte = false;
 bool teclaPressionada[256]{};
 unsigned long long ordemTecla[256]{}, proximaOrdemTecla=0;
 EstatisticasPartida estatisticas;
@@ -272,7 +269,10 @@ FuncaoXInputGetState obterEstadoXInput = nullptr;
 bool tentouCarregarXInput = false;
 IDirectInput8W* entradaDireta = nullptr;
 IDirectInputDevice8W* controleDireto = nullptr;
-ULONGLONG proximaBuscaControle = 0;
+// EnumDevices do DirectInput varre todos os dispositivos USB/Bluetooth e leva
+// ~200 ms: buscar a cada segundo travava o jogo sem joystick. Agora so busca
+// ao abrir e quando o Windows avisa que algo foi conectado (WM_DEVICECHANGE).
+bool buscarControleDireto = true;
 struct FaixaEixo { LONG minimo=-1000,maximo=1000; bool disponivel=true; };
 FaixaEixo faixasControle[4];
 Posicao jogador2{1, 2};
@@ -296,6 +296,12 @@ const int IMUNIDADE_RENASCER_MS = 2000;
 bool jogadorCaido[2]{};
 int tempoQuedaMs[2]{};
 int vidasJogador[2]{VIDAS_POR_JOGADOR, VIDAS_POR_JOGADOR};
+// Som de morte (assets/audio/dead.wav, ~1,5 s): toca uma vez no lugar da
+// musica. Com um jogador dura a tela de derrota (R volta a musica da fase);
+// com dois, cada queda recomeca o som e a fase volta quando ele termina.
+// Game over nao volta a musica da fase.
+const int DURACAO_SOM_MORTE_MS = 1550;
+int quedasComSom = 0, somMorteMs = 0;
 int imunidadeJogadorMs[2]{};
 int tempoPartidaMs = 0;
 unique_ptr<Gdiplus::Image> spriteVitoria, spriteDerrota;
@@ -338,10 +344,15 @@ bool bossIniciado = false;
 bool bossConcluido = false;
 // Itens obrigatorios (secao 8 do PLANO_M2.md): cumulativos durante a fase,
 // resetados em montarFase() quando a fase muda (regra do enunciado).
-int bombasExtras = 0;
-bool temBombaRelogio = false;
-bool imuneAPropriaBomba = false;
-bool atravessaBlocoQuebravel = false;
+// Cada jogador tem os seus: o item vale so para quem o pegou (indice = dono
+// da bomba: 0 = P1 ou bot, 1 = P2).
+struct PoderesJogador {
+    int alcance = ALCANCE_EXPLOSAO_INICIAL;
+    int bombasExtras = 0;
+    bool cartaChute = false, cartaTeleporte = false;
+    bool bombaRelogio = false, imuneAPropriaBomba = false, atravessaBloco = false;
+};
+PoderesJogador poderes[2];
 int vidas = VIDAS_BASE;
 // Garante que uma unica morte so desconta 1 vida, mesmo que atualizar()
 // rode varias vezes com estado == DERROTA antes do jogador apertar R.
@@ -604,8 +615,8 @@ void atualizarEstadoControle(HWND janela){
     }
     if(origem==SEM_CONTROLE){
         if(!entradaDireta)DirectInput8Create(GetModuleHandleW(nullptr),DIRECTINPUT_VERSION,IID_IDirectInput8W,reinterpret_cast<void**>(&entradaDireta),nullptr);
-        if(entradaDireta && !controleDireto && GetTickCount64()>=proximaBuscaControle){
-            proximaBuscaControle=GetTickCount64()+1000;
+        if(entradaDireta && !controleDireto && buscarControleDireto){
+            buscarControleDireto=false;
             controleSwitchSemLeitura=false;
             entradaDireta->EnumDevices(DI8DEVCLASS_GAMECTRL,descobrirControleGenerico,janela,DIEDFL_ATTACHEDONLY);
         }
@@ -947,8 +958,21 @@ wstring resumoJogadores() {
     if (doisJogadores) texto += L"  +  P2 " + teclasDoJogador(2);
     return texto;
 }
-// Na partida, os itens (chute, teleporte, detonar) agem sobre P1; se P1 esta
-// no joystick, as instrucoes mostram os botoes dele.
+// Itens seguem o dono das teclas de movimento: quem usa WASD aperta E/T/F,
+// quem usa as setas aperta I/O/P; quem esta no joystick usa X/Y/L/R.
+// Retorna o dono (0 = P1, 1 = P2) ou -1 se ninguem usa esse grupo de teclas.
+int donoDasTeclas(int grupo) {
+    if (teclaDoJogador(false) & grupo) return 0;
+    if (teclaDoJogador(true) & grupo) return 1;
+    return -1;
+}
+struct TeclasItens { const wchar_t *chute, *teleporte, *detonar; };
+TeclasItens teclasItensDoJogador(int dono) {
+    if (controleNoJogador(dono + 1)) return {L"X", L"Y", L"L/R"};
+    if (donoDasTeclas(TECLAS_WASD) == dono) return {L"E", L"T", L"F"};
+    return {L"I", L"O", L"P"};
+}
+// Com um jogador no joystick, as instrucoes mostram os botoes dele.
 bool itensNoJoystick() { return modo == MANUAL && joystickDoJogador(1); }
 bool somenteJoystick() { return itensNoJoystick() && !doisJogadores; }
 bool algumJoystickNaPartida() { return modo == MANUAL && (joystickDoJogador(1) || joystickDoJogador(2)); }
@@ -1019,7 +1043,7 @@ int donoDaChama(float l, float c, Fere fere) {
 // jogador so no modo inimigos (no modo amigos ela nao fere o parceiro).
 bool bombaFereJogador(const Bomba& b, int numero) {
     if (b.dono == DONO_INIMIGO) return true;
-    if (b.dono == numero-1) return !imuneAPropriaBomba;
+    if (b.dono == numero-1) return !poderes[numero-1].imuneAPropriaBomba;
     return modoRivais;
 }
 bool bombaFereInimigo(const Bomba& b) { return b.dono != DONO_INIMIGO; }
@@ -1058,6 +1082,8 @@ void derrubarJogador(int numero) {
     jogadorCaido[i] = true;
     tempoQuedaMs[i] = 0;
     vidasJogador[i] = max(0, vidasJogador[i]-1);
+    ++quedasComSom;
+    somMorteMs = DURACAO_SOM_MORTE_MS;
     // Bombas-relogio de quem caiu viram bombas comuns, senao ficariam no mapa.
     for (Bomba& b : bombas)
         if (b.dono == i && b.relogio && !b.explodindo) { b.relogio = false; b.tempoMs = TEMPO_BOMBA_MS; }
@@ -1077,13 +1103,13 @@ bool bombaEm(Posicao p) {
 }
 
 // Limite por jogador: a bomba de um nao ocupa a vaga do outro.
-int limiteBombas() { return 1 + bombasExtras; }
+int limiteBombas(int dono) { return 1 + poderes[dono].bombasExtras; }
 int bombasDoDono(int dono) {
     int total = 0;
     for (const Bomba& b : bombas) if (b.ativa && b.dono == dono) total++;
     return total;
 }
-int alcanceDaBomba(const Bomba& b) { return b.dono == DONO_INIMIGO ? ALCANCE_BOMBA_INIMIGO : alcanceExplosao; }
+int alcanceDaBomba(const Bomba& b) { return b.dono == DONO_INIMIGO ? ALCANCE_BOMBA_INIMIGO : poderes[b.dono].alcance; }
 
 void limparArea(int linha, int coluna) {
     mapa[linha][coluna] = VAZIO;
@@ -1201,6 +1227,7 @@ void iniciarBoss() {
 // essas sao da partida inteira, nao da fase (ver novaPartida/reiniciarFase).
 void montarFase() {
     tempoFimMs = 0;
+    somMorteMs = 0;
     jogadoresAtingidos = 0;
     jogadorCaido[0] = jogadorCaido[1] = false;
     tempoQuedaMs[0] = tempoQuedaMs[1] = 0;
@@ -1251,15 +1278,9 @@ void montarFase() {
         inimigo.recargaBombaMs = primeiraBomba(gerador);
     }
     itensNoChao.clear();
-    possuiCartaChute = false;
-    possuiCartaTeleporte = false;
-    alcanceExplosao = ALCANCE_EXPLOSAO_INICIAL;
     bombas.clear();
     // Bonus resetam ao trocar de fase (regra explicita do enunciado).
-    bombasExtras = 0;
-    temBombaRelogio = false;
-    imuneAPropriaBomba = false;
-    atravessaBlocoQuebravel = false;
+    poderes[0] = poderes[1] = PoderesJogador{};
     // NAO mexe em "vidas" aqui: isso e responsabilidade de quem chama
     // montarFase (avancarFase/novaPartida zeram pro valor base; reiniciarFase
     // preserva o que sobrou, ja que repetir a fase e o que custa uma vida).
@@ -1331,15 +1352,17 @@ void novaPartida(ModoJogo novoModo, Dificuldade novaDificuldade) {
 void coletarItensEm(Posicao pos, int dono = 0) {
     for (size_t i = 0; i < itensNoChao.size(); i++) {
         if (!iguais(itensNoChao[i].posicao, pos)) continue;
+        PoderesJogador& p = poderes[dono];
         switch (itensNoChao[i].tipo) {
-            case CHUTE: possuiCartaChute = true; break;
-            case TELEPORTE: possuiCartaTeleporte = true; break;
-            case RAIO: if (alcanceExplosao < ALCANCE_EXPLOSAO_MAXIMO) alcanceExplosao++; break;
-            case BOMBA_EXTRA: bombasExtras++; break;
-            case VIDA_EXTRA: vidas++; break;
-            case BOMBA_RELOGIO: temBombaRelogio = true; break;
-            case IMUNE_BOMBA: imuneAPropriaBomba = true; break;
-            case ATRAVESSA_BLOCO: atravessaBlocoQuebravel = true; break;
+            case CHUTE: p.cartaChute = true; break;
+            case TELEPORTE: p.cartaTeleporte = true; break;
+            case RAIO: if (p.alcance < ALCANCE_EXPLOSAO_MAXIMO) p.alcance++; break;
+            case BOMBA_EXTRA: p.bombasExtras++; break;
+            // Com dois jogadores as vidas sao de cada um (vidasJogador).
+            case VIDA_EXTRA: if (segundoJogadorAtivo()) vidasJogador[dono]++; else vidas++; break;
+            case BOMBA_RELOGIO: p.bombaRelogio = true; break;
+            case IMUNE_BOMBA: p.imuneAPropriaBomba = true; break;
+            case ATRAVESSA_BLOCO: p.atravessaBloco = true; break;
         }
         itensNoChao.erase(itensNoChao.begin() + i);
         estatisticas.itensColetados++;
@@ -1352,10 +1375,10 @@ void coletarItens() { coletarItensEm(jogador); }
 
 // Compartilhados entre moverJogador (P1) e moverJogador2 (P2, cooperativo):
 // os dois times "um so" - mesma vida, pontos e progresso de fase.
-bool podeAndarPara(Posicao destino) {
+bool podeAndarPara(Posicao destino, int dono = 0) {
     if (bloqueadoBoss(destino) || bombaEm(destino)) return false;
     return livre(destino.linha, destino.coluna) ||
-           (atravessaBlocoQuebravel && dentro(destino.linha, destino.coluna) &&
+           (poderes[dono].atravessaBloco && dentro(destino.linha, destino.coluna) &&
             mapa[destino.linha][destino.coluna] == PAREDE_FRAGIL);
 }
 
@@ -1364,12 +1387,12 @@ bool podeInverterPasso(Posicao alvo, float l, float c, int dl, int dc, int dono)
     if (!((dl == 0 && l == alvo.linha && dc * (alvo.coluna-c) < 0) ||
           (dc == 0 && c == alvo.coluna && dl * (alvo.linha-l) < 0))) return false;
     Posicao volta{alvo.linha+dl, alvo.coluna+dc};
-    if (podeAndarPara(volta)) return true;
+    if (podeAndarPara(volta, dono)) return true;
     // Ainda nao terminou de sair da propria bomba: pode cancelar a saida.
     // Depois de chegar em outra casa, esta excecao deixa de se aplicar.
     if (!iguais(volta,origemPassoJogador[dono]) || bloqueadoBoss(volta) ||
         !(livre(volta.linha,volta.coluna) ||
-          (atravessaBlocoQuebravel && dentro(volta.linha,volta.coluna) &&
+          (poderes[dono].atravessaBloco && dentro(volta.linha,volta.coluna) &&
            mapa[volta.linha][volta.coluna] == PAREDE_FRAGIL))) return false;
     for (const Bomba& b : bombas)
         if (b.ativa && iguais(b.posicao,volta)) return b.dono == dono && !b.explodindo;
@@ -1400,7 +1423,7 @@ void moverJogador(int dl, int dc) {
     direcaoJogador = {dl, dc};
     Posicao origem = jogador;
     Posicao destino{jogador.linha + dl, jogador.coluna + dc};
-    if (emPasso || podeAndarPara(destino)) jogador = destino;
+    if (emPasso || podeAndarPara(destino, 0)) jogador = destino;
     if (!iguais(origem, jogador)) {
         estatisticas.movimentos++;
         estatisticas.movimentosFase++;
@@ -1427,7 +1450,7 @@ void moverJogador2(int dl, int dc) {
     direcaoJogador2 = {dl, dc};
     Posicao origem = jogador2;
     Posicao destino{jogador2.linha + dl, jogador2.coluna + dc};
-    if (emPasso || podeAndarPara(destino)) jogador2 = destino;
+    if (emPasso || podeAndarPara(destino, 1)) jogador2 = destino;
     if (!iguais(origem, jogador2)) {
         estatisticas.movimentos++;
         estatisticas.movimentosFase++;
@@ -1441,15 +1464,14 @@ void moverJogador2(int dl, int dc) {
 void iniciarExplosaoBomba(Bomba& b);
 
 void colocarBombaEm(Posicao pos, int dono = 0) {
-    if (estado != JOGANDO || bombasDoDono(dono) >= limiteBombas() || bombaEm(pos)) return;
-    if ((dono == 0 || dono == 1) && jogadorCaido[dono]) return;
+    if (dono != 0 && dono != 1) return;
+    if (estado != JOGANDO || bombasDoDono(dono) >= limiteBombas(dono) || bombaEm(pos)) return;
+    if (jogadorCaido[dono]) return;
     Bomba nova;
     nova.posicao = pos;
     nova.ativa = true;
     nova.tempoMs = TEMPO_BOMBA_MS;
-    // So P1 tem tecla de detonar; no modo inimigos a bomba de P2 nao seria
-    // detonada pelo dono, entao ela volta a ser uma bomba comum.
-    nova.relogio = temBombaRelogio && (dono == 0 || !modoRivais);
+    nova.relogio = poderes[dono].bombaRelogio;
     nova.dono = dono;
     bombas.push_back(nova);
     estatisticas.bombasUsadas++;
@@ -1467,49 +1489,57 @@ void colocarBomba() { colocarBombaEm(casaParaBomba(jogadorVisualL, jogadorVisual
 void colocarBomba2() { colocarBombaEm(casaParaBomba(jogador2VisualL, jogador2VisualC, jogador2, 1), 1); }
 
 // Bomba-relogio (item): nao explode sozinha, so quando o jogador aperta a
-// tecla de detonar - todas as bombas-relogio ativas do jogador explodem
-// juntas, como no Bomberman classico.
-void detonarBombasRelogio() {
+// tecla de detonar - todas as bombas-relogio ativas DESSE jogador explodem
+// juntas, como no Bomberman classico; as do outro jogador nao.
+void detonarBombasRelogio(int dono = 0) {
     for (Bomba& b : bombas)
-        if (b.ativa && !b.explodindo && b.relogio && (b.dono == 0 || !modoRivais)) iniciarExplosaoBomba(b);
+        if (b.ativa && !b.explodindo && b.relogio && b.dono == dono) iniciarExplosaoBomba(b);
 }
 
-void chutarBomba() {
-    if (estado != JOGANDO || jogadorCaido[0] || !possuiCartaChute) return;
-    Posicao esperado{jogador.linha + direcaoJogador.linha, jogador.coluna + direcaoJogador.coluna};
+void chutarBomba(int dono = 0) {
+    if (estado != JOGANDO || jogadorCaido[dono] || !poderes[dono].cartaChute) return;
+    if (dono == 1 && !segundoJogadorAtivo()) return;
+    const Posicao& pos = dono == 0 ? jogador : jogador2;
+    const Posicao& direcao = dono == 0 ? direcaoJogador : direcaoJogador2;
+    Posicao esperado{pos.linha + direcao.linha, pos.coluna + direcao.coluna};
     for (Bomba& b : bombas) {
         if (!b.ativa || b.explodindo || !iguais(b.posicao, esperado)) continue;
         Posicao destinoFinal = b.posicao;
         for (int passo = 1; passo <= ALCANCE_CHUTE; passo++) {
-            Posicao tentativa{b.posicao.linha + direcaoJogador.linha * passo,
-                              b.posicao.coluna + direcaoJogador.coluna * passo};
+            Posicao tentativa{b.posicao.linha + direcao.linha * passo,
+                              b.posicao.coluna + direcao.coluna * passo};
             if (!livre(tentativa.linha, tentativa.coluna) || temInimigo(tentativa)) break;
             destinoFinal = tentativa;
         }
         b.posicao = destinoFinal;
-        possuiCartaChute = false;
+        poderes[dono].cartaChute = false;
         return;
     }
 }
 
-void teletransportarJogador() {
-    if (estado != JOGANDO || jogadorCaido[0] || !possuiCartaTeleporte) return;
+void teletransportarJogador(int dono = 0) {
+    if (estado != JOGANDO || jogadorCaido[dono] || !poderes[dono].cartaTeleporte) return;
+    if (dono == 1 && !segundoJogadorAtivo()) return;
+    const Posicao& outro = dono == 0 ? jogador2 : jogador;
     vector<Posicao> livres;
     for (int l = 1; l < LINHAS - 1; l++)
         for (int c = 1; c < COLUNAS - 1; c++)
             if (livre(l, c) && !temInimigo({l, c}) && !bombaEm({l, c}) &&
-                !(doisJogadores && iguais({l, c}, jogador2)))
+                !(jogadorEmCampo(2 - dono) && iguais({l, c}, outro)))
                 livres.push_back({l, c});
     if (livres.empty()) return;
     uniform_int_distribution<int> sorteio(0, static_cast<int>(livres.size()) - 1);
-    jogador = livres[sorteio(gerador)];
+    Posicao& pos = dono == 0 ? jogador : jogador2;
+    pos = livres[sorteio(gerador)];
     // Teleporte "pula" de verdade - a posicao visual tem que acompanhar na
     // hora, nao deslizar visivelmente atravessando o mapa inteiro.
-    jogadorVisualL = static_cast<float>(jogador.linha);
-    jogadorVisualC = static_cast<float>(jogador.coluna);
-    atingirSePerigoso(jogadorVisualL,jogadorVisualC,1);
-    coletarItens();
-    possuiCartaTeleporte = false;
+    float& visualL = dono == 0 ? jogadorVisualL : jogador2VisualL;
+    float& visualC = dono == 0 ? jogadorVisualC : jogador2VisualC;
+    visualL = static_cast<float>(pos.linha);
+    visualC = static_cast<float>(pos.coluna);
+    poderes[dono].cartaTeleporte = false;
+    atingirSePerigoso(visualL, visualC, dono + 1);
+    coletarItensEm(pos, dono);
 }
 
 void destruirBlocoBonus(int linha, int coluna) {
@@ -1527,7 +1557,7 @@ void destruirBlocoBonus(int linha, int coluna) {
 // alcance esgotado) ou continua. Isso implementa a regra do enunciado "a
 // explosao passara por tantos blocos quebraveis quanto o nivel do fogo
 // permitir" - ao contrario da versao antiga (que sempre parava no primeiro
-// bloco fragil), aqui o mesmo alcanceExplosao tambem conta quantos blocos
+// bloco fragil), aqui o mesmo alcance do fogo (poderes[dono].alcance) tambem conta quantos blocos
 // frageis em sequencia a chama consegue atravessar/destruir.
 void libertarMario(Posicao p, int dono = 0) {
     if(!marioAliado.escondido || !iguais(p,marioAliado.bloco))return;
@@ -2193,7 +2223,7 @@ void verificarVitoria() {
 // para o perigo da bomba real (perigoDaBomba) quanto para o bot simular,
 // antes de plantar, se uma bomba hipotetica ali teria escape (existeFugaSegura).
 bool celulaNoAlcance(Posicao origemBomba, Posicao p, int alcance = -1) {
-    if (alcance < 0) alcance = alcanceExplosao;
+    if (alcance < 0) alcance = poderes[0].alcance; // so o bot (P1) simula bombas
     if (iguais(p, origemBomba)) return true;
     int dl = p.linha - origemBomba.linha;
     int dc = p.coluna - origemBomba.coluna;
@@ -2247,7 +2277,7 @@ bool existeFugaSegura(Posicao origem) {
 bool alvoParaBomba(Posicao p) {
     const int direcoes[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
     for (int d = 0; d < 4; d++) {
-        for (int distancia = 1; distancia <= alcanceExplosao; distancia++) {
+        for (int distancia = 1; distancia <= poderes[0].alcance; distancia++) {
             int l = p.linha + direcoes[d][0] * distancia;
             int c = p.coluna + direcoes[d][1] * distancia;
             if (!dentro(l, c) || mapa[l][c] == PAREDE_SOLIDA) break;
@@ -2476,6 +2506,7 @@ void atualizar(int tempoMs) {
     relogioAnimacaoMs += tempoMs;
     if (modo == MENU) return;
     for (int i = 0; i < 2; i++) if (jogadorCaido[i]) tempoQuedaMs[i] += tempoMs;
+    somMorteMs = max(0, somMorteMs - tempoMs);
     if (estado != JOGANDO) {
         tempoFimMs += tempoMs;
         if (modo == AUTOMATICO && tempoFimMs >= 1400) {
@@ -2736,17 +2767,29 @@ void carregarAssets() {
     prepararTemaFase2Compacto();
 }
 
-// MCI reproduz MP3 usando o winmm, ja vinculado ao jogo.
-MCIDEVICEID dispositivoMusica = 0;
-wstring faixaMusicaAtual;
+// MCI reproduz MP3 usando o winmm, ja vinculado ao jogo. Fechar/abrir/tocar
+// uma faixa trava ~100 ms, entao o MCI roda numa thread propria: a thread do
+// jogo so pede a faixa e segue (senao o personagem "pula" no inicio da fase).
+MCIDEVICEID dispositivoMusica = 0; // so a thread de musica mexe
+wstring faixaMusicaAtual;          // so a thread de musica mexe
+CRITICAL_SECTION travaMusica;
+wstring faixaMusicaPedida;         // protegida por travaMusica
+bool encerrandoMusica = false;     // protegida por travaMusica
+HANDLE eventoMusica = nullptr, threadMusica = nullptr;
+wstring ultimaFaixaPedida;         // so a thread do jogo mexe
+
+const wchar_t* const SOM_MORTE = L"dead.wav";
 
 wstring musicaDaTela() {
     if (modo == MENU) return L"menu.mp3";
+    // "|n" distingue uma queda da outra: cada morte recomeca o som.
+    if (estado == DERROTA || estado == FIM_DE_JOGO || somMorteMs > 0)
+        return wstring(SOM_MORTE) + L"|" + to_wstring(quedasComSom);
     if (faseAtual == TOTAL_FASES) return L"bowser_phase.mp3";
     return L"phase_" + to_wstring(faseAtual) + L".mp3";
 }
 
-void pararMusica() {
+void fecharFaixa() {
     if (dispositivoMusica) {
         mciSendCommandW(dispositivoMusica, MCI_CLOSE, MCI_WAIT, 0);
         dispositivoMusica = 0;
@@ -2754,13 +2797,15 @@ void pararMusica() {
     faixaMusicaAtual.clear();
 }
 
-void iniciarMusica() {
-    wstring faixa = musicaDaTela();
-    // O timer acompanha as transicoes sem reiniciar a faixa a cada quadro.
+// Roda na thread de musica (ou direto nos testes). Faixa vazia = silencio.
+void tocarFaixa(const wstring& faixa) {
+    if (faixa.empty()) { fecharFaixa(); return; }
     if (faixa == faixaMusicaAtual) return;
-    pararMusica();
+    fecharFaixa();
     faixaMusicaAtual = faixa;
-    wstring caminho = pastaDoExecutavel() + L"\\assets\\audio\\" + faixa;
+    wstring arquivo = faixa.substr(0, faixa.find(L'|'));
+    bool repetir = arquivo != SOM_MORTE; // o som de morte toca uma vez so
+    wstring caminho = pastaDoExecutavel() + L"\\assets\\audio\\" + arquivo;
     MCI_OPEN_PARMSW abertura{};
     abertura.lpstrDeviceType = L"mpegvideo";
     abertura.lpstrElementName = caminho.c_str();
@@ -2770,7 +2815,7 @@ void iniciarMusica() {
     if (!erro) {
         dispositivoMusica = abertura.wDeviceID;
         MCI_PLAY_PARMS reproducao{};
-        erro = mciSendCommandW(dispositivoMusica, MCI_PLAY, MCI_DGV_PLAY_REPEAT,
+        erro = mciSendCommandW(dispositivoMusica, MCI_PLAY, repetir ? MCI_DGV_PLAY_REPEAT : 0,
                               reinterpret_cast<DWORD_PTR>(&reproducao));
     }
     if (erro) {
@@ -2779,9 +2824,57 @@ void iniciarMusica() {
         mciGetErrorStringW(erro, detalhe, 256);
         wstring mensagem = L"Falha ao tocar " + caminho + L": " + detalhe + L"\n";
         OutputDebugStringW(mensagem.c_str());
-        pararMusica();
+        fecharFaixa();
         faixaMusicaAtual = faixa;
     }
+}
+
+DWORD WINAPI rodarThreadMusica(LPVOID) {
+    for (;;) {
+        WaitForSingleObject(eventoMusica, INFINITE);
+        EnterCriticalSection(&travaMusica);
+        wstring faixa = faixaMusicaPedida;
+        bool sair = encerrandoMusica;
+        LeaveCriticalSection(&travaMusica);
+        if (sair) break;
+        // Pedidos seguidos se juntam: so a ultima faixa pedida e aberta.
+        tocarFaixa(faixa);
+    }
+    fecharFaixa();
+    return 0;
+}
+
+void pedirFaixa(const wstring& faixa) {
+    // O timer chama a cada quadro; so repassa quando a faixa muda.
+    if (faixa == ultimaFaixaPedida && (threadMusica || faixa.empty())) return;
+    ultimaFaixaPedida = faixa;
+    if (!threadMusica) {
+        InitializeCriticalSection(&travaMusica);
+        eventoMusica = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        threadMusica = CreateThread(nullptr, 0, rodarThreadMusica, nullptr, 0, nullptr);
+    }
+    EnterCriticalSection(&travaMusica);
+    faixaMusicaPedida = faixa;
+    LeaveCriticalSection(&travaMusica);
+    SetEvent(eventoMusica);
+}
+
+void iniciarMusica() { pedirFaixa(musicaDaTela()); }
+void pararMusica() { pedirFaixa(L""); }
+
+// Ao fechar o jogo: a thread fecha o dispositivo MCI e termina.
+void encerrarMusica() {
+    if (!threadMusica) return;
+    EnterCriticalSection(&travaMusica);
+    encerrandoMusica = true;
+    LeaveCriticalSection(&travaMusica);
+    SetEvent(eventoMusica);
+    if (WaitForSingleObject(threadMusica, 3000) != WAIT_OBJECT_0) return;
+    CloseHandle(threadMusica); CloseHandle(eventoMusica);
+    DeleteCriticalSection(&travaMusica);
+    threadMusica = eventoMusica = nullptr;
+    encerrandoMusica = false;
+    ultimaFaixaPedida.clear();
 }
 
 void liberarBuffer() {
@@ -3498,7 +3591,8 @@ void desenharVidasJogadores(Gdiplus::Graphics& g) {
         if (nome.empty()) nome = i==0 ? L"P1" : L"P2";
         if (nome.size() > 10) nome = nome.substr(0,10) + L"...";
         desenharTexto(g, (i==0 ? L"P1  " : L"P2  ") + nome, x+50, y+6, 11, cor);
-        for (int v = 0; v < VIDAS_POR_JOGADOR; v++) {
+        // Vida extra pode passar das 3 iniciais; cabem ate 5 coracoes no painel.
+        for (int v = 0; v < min(5, max(VIDAS_POR_JOGADOR, vidasJogador[i])); v++) {
             bool cheia = v < vidasJogador[i];
             float cx = float(x+58+v*26), cy = float(y+40);
             Gdiplus::SolidBrush pincel(cheia ? Gdiplus::Color(255,255,85,95) : Gdiplus::Color(255,58,66,82));
@@ -3527,11 +3621,15 @@ void desenharPainelLateral(Gdiplus::Graphics& g) {
     desenharTexto(g, (segundoJogadorAtivo() ? L"VIDAS  P1 " + to_wstring(vidasJogador[0]) + L"  P2 " + to_wstring(vidasJogador[1])
                                             : L"VIDAS  " + to_wstring(vidas)) + L"    INIMIGOS  " + to_wstring(inimigosVivos()),
                   812, 207, 14, Gdiplus::Color(255,98,235,199));
-    // O limite de bombas e de cada jogador.
-    wstring usoBombas = segundoJogadorAtivo()
-        ? L"P1 " + to_wstring(bombasDoDono(0)) + L"  P2 " + to_wstring(bombasDoDono(1)) + L" / " + to_wstring(limiteBombas())
-        : to_wstring(bombasDoDono(0)) + L" / " + to_wstring(limiteBombas());
-    desenharTexto(g, L"FOGO  " + to_wstring(alcanceExplosao) + L"    BOMBAS  " + usoBombas, 812, 239, 14, Gdiplus::Color(255,252,187,65));
+    // Fogo e limite de bombas sao de cada jogador.
+    auto fogoEBombas = [](int dono) {
+        return L"FOGO  " + to_wstring(poderes[dono].alcance) + L"    BOMBAS  " +
+               to_wstring(bombasDoDono(dono)) + L" / " + to_wstring(limiteBombas(dono));
+    };
+    if (segundoJogadorAtivo()) {
+        desenharTexto(g, L"P1  " + fogoEBombas(0), 812, 230, 12, Gdiplus::Color(255,98,235,199));
+        desenharTexto(g, L"P2  " + fogoEBombas(1), 812, 251, 12, Gdiplus::Color(255,252,187,65));
+    } else desenharTexto(g, fogoEBombas(0), 812, 239, 14, Gdiplus::Color(255,252,187,65));
     painel(g, 812, 278, 236, 1, Gdiplus::Color(255,55,68,86));
     desenharTexto(g, boss.vivo ? NOMES_BOSSES[indiceBoss()] : L"OBJETIVO DA FASE", 812, 298, 14,
                   Gdiplus::Color(255,252,187,65));
@@ -3554,14 +3652,26 @@ void desenharPainelLateral(Gdiplus::Graphics& g) {
     desenharTexto(g, L"Movimentos   " + to_wstring(estatisticas.movimentos), 812, 610, 14, Gdiplus::Color(255,220,230,240));
     desenharTexto(g, L"Bombas usadas   " + to_wstring(estatisticas.bombasUsadas), 812, 639, 14, Gdiplus::Color(255,220,230,240));
     desenharTexto(g, L"Itens coletados   " + to_wstring(estatisticas.itensColetados), 812, 668, 14, Gdiplus::Color(255,220,230,240));
-    wstring itens;
-    bool joy = itensNoJoystick();
-    if (possuiCartaChute) itens += joy ? L"X: chute  " : L"E: chute  ";
-    if (possuiCartaTeleporte) itens += joy ? L"Y: teleporte  " : L"T: teleporte  ";
-    if (temBombaRelogio) itens += joy ? L"L/R: detonar  " : L"F: detonar  ";
-    if (imuneAPropriaBomba) itens += L"Escudo  ";
-    if (atravessaBlocoQuebravel) itens += L"Atravessar caixas";
-    desenharTexto(g, itens, 812, 710, 12, Gdiplus::Color(255,252,187,65));
+    auto itensDe = [](int dono) {
+        const PoderesJogador& p = poderes[dono];
+        TeclasItens t = teclasItensDoJogador(dono);
+        wstring itens;
+        if (p.cartaChute) itens += wstring(t.chute) + L": chute  ";
+        if (p.cartaTeleporte) itens += wstring(t.teleporte) + L": teleporte  ";
+        if (p.bombaRelogio) itens += wstring(t.detonar) + L": detonar  ";
+        if (p.imuneAPropriaBomba) itens += L"Escudo  ";
+        if (p.atravessaBloco) itens += L"Atravessar caixas";
+        return itens;
+    };
+    if (segundoJogadorAtivo()) {
+        desenharTexto(g, L"P1  " + itensDe(0), 812, 700, 11, Gdiplus::Color(255,98,235,199));
+        desenharTexto(g, L"P2  " + itensDe(1), 812, 720, 11, Gdiplus::Color(255,252,187,65));
+    } else desenharTexto(g, itensDe(0), 812, 710, 12, Gdiplus::Color(255,252,187,65));
+}
+
+wstring itensRodape(int dono) {
+    TeclasItens t = teclasItensDoJogador(dono);
+    return wstring(t.chute) + L" chute  " + t.teleporte + L" teleporte  " + t.detonar + L" detonar";
 }
 
 void desenharRodape(Gdiplus::Graphics& g) {
@@ -3571,6 +3681,8 @@ void desenharRodape(Gdiplus::Graphics& g) {
                                     : wstring(L"COMPUTADOR JOGANDO      M  menu"), 24, y+12, 14, Gdiplus::Color(255,220,230,240));
     desenharTexto(g, somenteJoystick()
                   ? L"X  chute     Y  teleporte     L / R  detonar     SELECT  menu     fim da fase: A / START de novo"
+                  : segundoJogadorAtivo()
+                  ? L"itens  P1: " + itensRodape(0) + L"   P2: " + itensRodape(1) + L"     R reiniciar   M menu   ESC sair"
                   : itensNoJoystick()
                   ? L"P1: X chute  Y teleporte  L/R detonar  SELECT menu     teclado: R reiniciar  M menu  ESC sair"
                   : L"E  chute     T  teleporte     F  detonar     R  reiniciar     M  menu     ESC  sair",
@@ -3969,7 +4081,7 @@ void desenharComoJogar(Gdiplus::Graphics& g) {
         {L"Cada um tem 3 vidas por fase; sem vidas, volta na proxima fase.", 436, false},
         {L"AMIGOS: a bomba de um nao fere o outro (a sua propria fere voce).", 454, false},
         {L"INIMIGOS: todos contra todos; o Mario ajuda quem o libertar primeiro.", 472, false},
-        {L"Cada jogador tem seu proprio limite de bombas.", 490, false},
+        {L"Itens valem so p/ quem pega. P2 nas setas: I chute, O teleporte, P detonar.", 490, false},
         {L"Inimigos", 520, true},
         {L"Facil: um inimigo solta bombas; Medio: metade; Dificil: 75%.", 546, false},
         {L"A bomba de inimigo tem arco roxo e fere so os jogadores.", 564, false},
@@ -4213,9 +4325,15 @@ void lerTeclado(WPARAM tecla, LPARAM lParam) {
         if (teclaDoJogador(false) & TECLAS_WASD) colocarBomba();
         else if (teclaDoJogador(true) & TECLAS_WASD) colocarBomba2();
     }
-    else if (tecla == 'E') chutarBomba();
-    else if (tecla == 'T') teletransportarJogador();
-    else if (tecla == 'F') detonarBombasRelogio();
+    // Cada jogador usa os itens que ele mesmo pegou (ver donoDasTeclas).
+    else if (tecla == 'E' || tecla == 'T' || tecla == 'F' || tecla == 'I' || tecla == 'O' || tecla == 'P') {
+        bool wasd = tecla == 'E' || tecla == 'T' || tecla == 'F';
+        int dono = donoDasTeclas(wasd ? TECLAS_WASD : TECLAS_SETAS);
+        if (dono < 0) return;
+        if (tecla == 'E' || tecla == 'I') chutarBomba(dono);
+        else if (tecla == 'T' || tecla == 'O') teletransportarJogador(dono);
+        else detonarBombasRelogio(dono);
+    }
     else if (tecla == VK_RETURN) {
         if (teclaDoJogador(true) & TECLAS_SETAS) colocarBomba2();
         else if (teclaDoJogador(false) & TECLAS_SETAS) colocarBomba();
@@ -4229,7 +4347,8 @@ void lerTeclado(WPARAM tecla, LPARAM lParam) {
 }
 
 // Botoes do joystick fora do movimento: navegacao nos menus (direcional =
-// setas, A/Start = Enter, B/Select = voltar) e, na partida, itens de P1,
+// setas, A/Start = Enter, B/Select = voltar) e, na partida, itens de quem
+// esta com o joystick,
 // Select para o menu e Start para tentar de novo. So age no toque, nao ao segurar.
 void processarControleNoMenu() {
     EntradaControle e = entradaControle, ant = controleMenuAnterior;
@@ -4248,10 +4367,11 @@ void processarControleNoMenu() {
             return;
         }
         if (novo(e.select, ant.select)) { lerTeclado('M', 0); return; }
-        if (controleNoJogador(1)) {
-            if (novo(e.chute, ant.chute)) chutarBomba();
-            if (novo(e.teleporte, ant.teleporte)) teletransportarJogador();
-            if (novo(e.detonar, ant.detonar)) detonarBombasRelogio();
+        int dono = controleNoJogador(1) ? 0 : controleNoJogador(2) ? 1 : -1;
+        if (dono >= 0) {
+            if (novo(e.chute, ant.chute)) chutarBomba(dono);
+            if (novo(e.teleporte, ant.teleporte)) teletransportarJogador(dono);
+            if (novo(e.detonar, ant.detonar)) detonarBombasRelogio(dono);
         }
         return;
     }
@@ -4285,8 +4405,38 @@ void atualizarEscalaDpi(HWND janela) {
     cacheSpriteBoss.reset();
 }
 
-LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LPARAM lParam) {
+// Um quadro do jogo: controle, logica em passos fixos de 8 ms, musica e
+// pedido de desenho. Chamado pelo laco do WinMain a cada PASSO_LOGICA_MS
+// (e pelo WM_TIMER so quando o Windows segura esse laco).
+chrono::steady_clock::time_point ultimoPassoDoJogo = chrono::steady_clock::now();
+void passoDoJogo(HWND janela) {
     static auto ultimoInstante = chrono::steady_clock::now();
+    ultimoPassoDoJogo = chrono::steady_clock::now();
+    if(processoInsano) {
+        if(WaitForSingleObject(processoInsano,0)==WAIT_OBJECT_0) {
+            CloseHandle(processoInsano); processoInsano=nullptr;
+            ShowWindow(janela,SW_SHOW);
+            iniciarMusica();
+            ultimoInstante=chrono::steady_clock::now();
+        } else return;
+    }
+    auto agora = chrono::steady_clock::now();
+    atualizarEstadoControle(janela);
+    processarControleNoMenu();
+    int decorrido = static_cast<int>(chrono::duration_cast<chrono::milliseconds>(agora - ultimoInstante).count());
+    ultimoInstante = agora;
+    // Passos fixos pequenos: uma pausa de desenho nao muda a velocidade.
+    static int acumuladoMs = 0;
+    acumuladoMs += min(decorrido, 100);
+    while (acumuladoMs >= 8) {
+        atualizar(8);
+        acumuladoMs -= 8;
+    }
+    if (!processoInsano) iniciarMusica();
+    InvalidateRect(janela, nullptr, FALSE);
+}
+
+LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LPARAM lParam) {
     switch (mensagem) {
     case WM_CREATE:
         janelaPrincipal = janela;
@@ -4296,31 +4446,11 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
         atualizarEstadoControle(janela);
         SetTimer(janela, 1, PASSO_LOGICA_MS, nullptr);
         return 0;
-    case WM_TIMER: {
-        if(processoInsano) {
-            if(WaitForSingleObject(processoInsano,0)==WAIT_OBJECT_0) {
-                CloseHandle(processoInsano); processoInsano=nullptr;
-                ShowWindow(janela,SW_SHOW);
-                iniciarMusica();
-                ultimoInstante=chrono::steady_clock::now();
-            } else return 0;
-        }
-        auto agora = chrono::steady_clock::now();
-        atualizarEstadoControle(janela);
-        processarControleNoMenu();
-        int decorrido = static_cast<int>(chrono::duration_cast<chrono::milliseconds>(agora - ultimoInstante).count());
-        ultimoInstante = agora;
-        // Passos fixos pequenos: uma pausa de desenho nao muda a velocidade.
-        static int acumuladoMs = 0;
-        acumuladoMs += min(decorrido, 100);
-        while (acumuladoMs >= 8) {
-            atualizar(8);
-            acumuladoMs -= 8;
-        }
-        if (!processoInsano) iniciarMusica();
-        InvalidateRect(janela, nullptr, FALSE);
+    case WM_TIMER:
+        // Reserva: arrastar/redimensionar a janela prende o laco do WinMain
+        // num laco do proprio Windows; ai o jogo segue pelo timer.
+        if (chrono::steady_clock::now() - ultimoPassoDoJogo > chrono::milliseconds(50)) passoDoJogo(janela);
         return 0;
-    }
     case WM_KEYDOWN:
         if (wParam < 256) {
             if(!teclaPressionada[wParam]) ordemTecla[wParam]=++proximaOrdemTecla;
@@ -4420,6 +4550,10 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
                      SWP_NOZORDER | SWP_NOACTIVATE);
         return 0;
     }
+    case WM_DEVICECHANGE:
+        // Joystick conectado/desconectado: procura de novo no proximo tick.
+        buscarControleDireto = true;
+        return TRUE;
     case WM_KILLFOCUS:
         fill(begin(teclaPressionada), end(teclaPressionada), false);
         return 0;
@@ -4427,7 +4561,7 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
         if(processoInsano) { CloseHandle(processoInsano); processoInsano=nullptr; }
         executando = false;
         KillTimer(janela, 1);
-        pararMusica();
+        encerrarMusica();
         encerrarControle();
         liberarAssets();
         PostQuitMessage(0);
@@ -4439,6 +4573,8 @@ LRESULT CALLBACK processarMensagem(HWND janela, UINT mensagem, WPARAM wParam, LP
 void tornarAplicacaoDpiAware() {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 }
+
+void rodarLacoDoJogo(HWND janela);
 
 int WINAPI WinMain(HINSTANCE instancia, HINSTANCE, LPSTR, int exibir) {
     tornarAplicacaoDpiAware();
@@ -4469,11 +4605,37 @@ int WINAPI WinMain(HINSTANCE instancia, HINSTANCE, LPSTR, int exibir) {
     ShowWindow(janela, exibir);
     UpdateWindow(janela);
 
-    MSG mensagem;
-    while (GetMessageW(&mensagem, nullptr, 0, 0) > 0) {
-        TranslateMessage(&mensagem);
-        DispatchMessageW(&mensagem);
-    }
+    rodarLacoDoJogo(janela);
     Gdiplus::GdiplusShutdown(tokenGdiPlus);
     return 0;
+}
+
+// Laco do jogo. O WM_TIMER do Windows so dispara em multiplos de ~15,6 ms:
+// pedindo 16 ms, os quadros saiam alternando 15 e 31 ms e o boneco andava
+// "engasgado". Aqui cada quadro sai a cada PASSO_LOGICA_MS, esperando com
+// o relogio do Windows em 1 ms e acordando na hora se chegar tecla.
+void rodarLacoDoJogo(HWND janela) {
+    timeBeginPeriod(1);
+    MSG mensagem;
+    auto proximoQuadro = chrono::steady_clock::now();
+    while (executando) {
+        bool sair = false;
+        while (PeekMessageW(&mensagem, nullptr, 0, 0, PM_REMOVE)) {
+            if (mensagem.message == WM_QUIT) { sair = true; break; }
+            TranslateMessage(&mensagem);
+            DispatchMessageW(&mensagem);
+        }
+        if (sair || !executando) break;
+        auto agora = chrono::steady_clock::now();
+        if (agora < proximoQuadro) {
+            long long falta = chrono::duration_cast<chrono::milliseconds>(proximoQuadro - agora).count();
+            MsgWaitForMultipleObjects(0, nullptr, FALSE, static_cast<DWORD>(max(1LL, falta)), QS_ALLINPUT);
+            continue;
+        }
+        proximoQuadro += chrono::milliseconds(PASSO_LOGICA_MS);
+        if (proximoQuadro < agora) proximoQuadro = agora + chrono::milliseconds(PASSO_LOGICA_MS);
+        passoDoJogo(janela);
+        UpdateWindow(janela); // desenha ja, sem esperar a fila
+    }
+    timeEndPeriod(1);
 }

@@ -13,7 +13,7 @@ void prepararCenario(Posicao pos, float l, float c, Posicao alvoInimigo, float i
     inimigos[0].visualL = il; inimigos[0].visualC = ic;
     bombas.clear(); itensNoChao.clear(); perigoBoss.clear(); boss = Boss{};
     marioAliado=MarioAliado{};macasMario.clear();macasNoChao.clear();areasBoss.clear();fogosBoss.clear();blocosBonus.clear();projeteisBoss.clear();impactosBoss.clear();
-    imuneAPropriaBomba = false; vidaPerdida = false; vidas = 3;
+    poderes[0] = poderes[1] = PoderesJogador{}; vidaPerdida = false; vidas = 3;
     registroSalvo = false; portalAtivo = false; jogadoresAtingidos=0;
     jogadorCaido[0] = jogadorCaido[1] = false;
     vidasJogador[0] = vidasJogador[1] = VIDAS_POR_JOGADOR; imunidadeJogadorMs[0] = imunidadeJogadorMs[1] = 0;
@@ -26,7 +26,7 @@ int main() {
     for (bool p2 : {false, true}) for (Posicao d : direcoes) {
         for (float progresso : {0.f, .25f, .75f, .999f, 1.f}) {
             prepararCenario({5,5},5,5,{8,8},8,8);
-            bombasExtras=0; temBombaRelogio=false; estatisticas={};
+            poderes[0]=poderes[1]=PoderesJogador{}; estatisticas={};
             doisJogadores=p2; jogador2={5,5}; jogador2VisualL=5; jogador2VisualC=5;
             tempoMovimentoMs=tempoMovimentoMs2=0;
             if(p2) moverJogador2(d.linha,d.coluna);
@@ -62,7 +62,7 @@ int main() {
     for (bool p2 : {false,true}) for (Posicao d : direcoes)
         for (float progresso : {0.f,.1f,.5f,.9f}) for (bool bombaAntes : {false,true}) {
             prepararCenario({5,5},5,5,{8,8},8,8);
-            bombasExtras=0; temBombaRelogio=false; estatisticas={};
+            poderes[0]=poderes[1]=PoderesJogador{}; estatisticas={};
             doisJogadores=p2; jogador2={5,5}; jogador2VisualL=5; jogador2VisualC=5;
             tempoMovimentoMs=tempoMovimentoMs2=0;
             auto mover=[&](int sentido) {
@@ -153,7 +153,7 @@ int main() {
     jogadorVisualC=5;
     atingirPersonagens(inimigos,estado,pontos);
     assert(estado == DERROTA);
-    estado=JOGANDO; imuneAPropriaBomba=true;
+    estado=JOGANDO; poderes[0].imuneAPropriaBomba=true;
     atingirPersonagens(inimigos,estado,pontos);
     assert(estado == JOGANDO);
     // Inimigo tambem nao morre antecipadamente por ter escolhido casa em chamas.

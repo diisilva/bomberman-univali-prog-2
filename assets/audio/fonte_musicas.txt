@@ -1,0 +1,14 @@
+Trilhas do jogo - fonte: Pixabay (busca "16 bits")
+https://pixabay.com/pt/music/search/16%20bits/?pagi=4
+
+Licenca: Pixabay Content License (uso livre, inclusive em projetos, sem
+atribuicao obrigatoria): https://pixabay.com/pt/service/license-summary/
+
+Uso no jogo (bomberman.cpp, musicaDaTela):
+  menu.mp3          menus
+  phase_1..9.mp3    fases 1 a 9 da campanha
+  bowser_phase.mp3  fase 10 (Bowser)
+  dead.wav          som de morte e game over (toca uma vez, sem loop)
+
+Arquivos recodificados para MP3 128 kbps / 44,1 kHz (eram 256 kbps) para
+reduzir o tamanho; duracao identica.

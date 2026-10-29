@@ -11,6 +11,22 @@ Para jogar no Windows 10/11, baixe a pasta completa e abra `bomberman.exe`;
 mantenha `assets/`, `assets_otimizados/` e `SDL2.dll` junto dos executaveis. As bibliotecas
 do GCC sao incorporadas ao build, sem exigir MinGW instalado para jogar.
 
+### Jogar em outro PC (Bomberman.zip)
+
+O arquivo `Bomberman.zip`, na raiz do repositorio, traz so o necessario para jogar:
+`bomberman.exe`, `modo_insano.exe`, `SDL2.dll`, `assets/` e `assets_otimizados/`.
+Nao precisa instalar nada (testado em outro PC com Windows).
+
+1. Copie `Bomberman.zip` para o PC (pendrive, download do GitHub etc.).
+2. Se veio da internet: botao direito no zip → **Propriedades** → marque **Desbloquear** → OK.
+3. Botao direito no zip → **Extrair tudo...**. Nao abra o jogo de dentro do zip:
+   o exe precisa das pastas `assets/` ao lado dele.
+4. Abra `Bomberman\bomberman.exe`.
+5. Se aparecer "O Windows protegeu o computador": **Mais informacoes** → **Executar assim mesmo**.
+
+O ranking (`ranking.csv`) e criado vazio na pasta do jogo na primeira partida.
+Para atualizar o zip depois de recompilar, gere de novo com essas mesmas pastas.
+
 Requisitos: Windows 10/11, PowerShell e GCC/MinGW C++17. O script procura `g++` no PATH e em `C:\msys64\ucrt64\bin\g++.exe`.
 
 ```powershell
@@ -81,7 +97,9 @@ Branco, preto, azul e vermelho têm as mesmas habilidades. A escolha muda aparê
 A trilha usa os MP3 de `assets/audio/` em loop: `menu.mp3` nos menus,
 `phase_1.mp3` a `phase_9.mp3` nas fases correspondentes e `bowser_phase.mp3`
 na fase 10 (Bowser). A música troca automaticamente ao entrar ou sair da campanha
-e ao avançar de fase.
+e ao avançar de fase. A cada morte toca `dead.wav` uma vez no lugar da música: com 1
+jogador, até apertar R; com 2, até o som acabar, quando a música da fase volta. No
+game over a música da fase não volta.
 
 ### Joystick e dois jogadores
 
@@ -97,8 +115,8 @@ do joystick move o joystick; 1/2 sao atalhos; clique tambem funciona):
 | 2 sem joystick | P1 WASD + Espaco, P2 setas + Enter |
 
 Quem fica sozinho no teclado usa WASD ou setas e Espaco ou Enter. No joystick:
-direcional ou analogico movem, A ou B plantam bomba; para P1 no joystick,
-X chuta, Y teleporta e L/R detonam (rodape, painel de itens e tela final passam
+direcional ou analogico movem, A ou B plantam bomba; para quem estiver no joystick
+(P1 ou P2), X chuta, Y teleporta e L/R detonam (rodape, painel de itens e tela final passam
 a mostrar esses botoes). Select volta ao menu. Na tela de fim, A/Start tentam de
 novo e B/Select vao ao menu, apos o painel aparecer. Nos menus, direcional = setas, A/Start = Enter, B/Select = voltar.
 O joystick so age com a janela do jogo em foco. Se ele desconectar durante a
@@ -134,9 +152,9 @@ Limpe os inimigos e entre no portal. Nas fases 2, 4, 6, 8 e 10, derrote tambem o
 | --- | --- |
 | WASD ou setas | Mover; com 2 jogadores no teclado, WASD = P1 e setas = P2 |
 | Espaço / Enter | Bomba (com 2 jogadores no teclado: P1 / P2) |
-| E | Chutar bomba, após obter item |
-| T | Teletransportar, após obter item |
-| F | Detonar bombas-relógio |
+| E / I | Chutar bomba, após obter item (E = quem usa WASD, I = quem usa as setas) |
+| T / O | Teletransportar, após obter item (T = WASD, O = setas) |
+| F / P | Detonar as suas bombas-relógio (F = WASD, P = setas) |
 | R | Reiniciar; após morte, aguarda a animação terminar |
 | M | Menu |
 | Q / Esc | Sair |
@@ -150,7 +168,7 @@ Com dois jogadores há dois modos:
 
 Cada jogador tem seu próprio limite de bombas (a bomba de um não ocupa a vaga do outro). No Fácil, um inimigo solta bombas; no Médio, metade; no Difícil, 75%. A bomba de inimigo tem arco roxo, alcance 2 e fere só os jogadores e o Mario.
 
-Nos dois modos, cada jogador tem 3 vidas por fase, mostradas em corações no topo da tela. Quem é atingido perde uma vida e renasce num lugar seguro, piscando e protegido por 2 segundos, enquanto o outro continua. Quem perde as 3 vidas fica fora até a próxima fase; ao passar pelo portal, os dois voltam com 3 vidas cada. Se os dois perderem as 3 vidas na mesma fase, é fim de jogo. Os itens são compartilhados. Bônus de fase são reiniciados ao trocar/repetir fase. Recompensas usam ícones distintos para fogo, bomba extra, vida, relógio, proteção, atravessar blocos, chute e teleporte. Blocos especiais não mostram pistas do conteúdo.
+Nos dois modos, cada jogador tem 3 vidas por fase, mostradas em corações no topo da tela. Quem é atingido perde uma vida e renasce num lugar seguro, piscando e protegido por 2 segundos, enquanto o outro continua. Quem perde as 3 vidas fica fora até a próxima fase; ao passar pelo portal, os dois voltam com 3 vidas cada. Se os dois perderem as 3 vidas na mesma fase, é fim de jogo. Cada item vale só para quem o pegou: fogo, bomba extra, bomba-relógio, proteção, atravessar blocos, chute, teleporte e vida extra (que soma nas vidas de quem pegou). Bônus de fase são reiniciados ao trocar/repetir fase. Recompensas usam ícones distintos para fogo, bomba extra, vida, relógio, proteção, atravessar blocos, chute e teleporte. Blocos especiais não mostram pistas do conteúdo.
 
 A morte toca nove poses no local do personagem atingido antes de exibir continuar/game over. O movimento termina cada passo antes da curva; a última direção pressionada tem prioridade. Contato e dano seguem a posição atual dos corpos, sem atingir antecipadamente por uma casa de destino reservada.
 

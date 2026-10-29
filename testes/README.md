@@ -171,3 +171,18 @@ Simula os comandos MCI sem tocar audio nem abrir janela. Verifica menu,
 fases 1 a 9, Bowser na fase 10, loop, preservacao da faixa entre ticks,
 fechamento na troca, retorno do Insano e arquivo ausente sem tentativas por quadro.
 A reproducao e a qualidade dos MP3 devem ser conferidas jogando.
+
+## Medicoes de desempenho (nao sao testes de aprovacao)
+
+```powershell
+g++ -std=c++17 -O2 -static testes/medir_laco.cpp -o medicao_laco.exe -lgdiplus -lwinmm -ldinput8 -ldxguid -lgdi32
+.\medicao_laco.exe
+g++ -std=c++17 -O2 -static testes/medir_controle.cpp -o medicao_controle.exe -lgdiplus -lwinmm -ldinput8 -ldxguid -lgdi32
+.\medicao_controle.exe
+```
+
+`medir_laco` roda o laco real do jogo (janela fora da tela, sem foco, som mudo) numa
+partida andando e mostra o intervalo entre quadros: deve ficar perto de 16 ms.
+`medir_controle` mostra quanto custa cada parte da busca de controle (SDL, XInput,
+DirectInput `EnumDevices`) - a varredura do DirectInput leva ~200 ms e por isso so
+roda ao abrir o jogo e quando um dispositivo e conectado.

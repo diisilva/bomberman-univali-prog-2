@@ -829,3 +829,40 @@ meio de uma rajada é a explicação mais provável do "andando na diagonal".
 
 **Entregue nesta sessão como HANDOFF para outro agente (Codex) continuar** - ver
 `HANDOFF_CODEX.md` na raiz do repositório para o contexto completo passado adiante.
+
+## Músicas por fase e itens separados no 2 jogadores (2026-10-29)
+
+- **PR #2 (Gabriel) mergeado:** a música procedural da Fase 7 (`gerarMusicaProcedural`/`PlaySound`)
+  foi substituída por MP3 em `assets/audio/` tocados em loop via MCI (`mpegvideo`); a faixa troca
+  sozinha entre menu, fases 1-9 e Bowser (fase 10). Arquivo ausente = jogo segue sem som.
+  MP3 recodificados de 256 para 128 kbps (49,4 MB -> 24,7 MB). Teste: `testes/verificar_musica.cpp`.
+- **Bug corrigido (2 jogadores):** todos os poderes eram globais do "time", entao o item que um
+  pegava valia para os dois (ex.: bomba-relogio). Agora ficam em `PoderesJogador poderes[2]`: fogo,
+  bomba extra, bomba-relogio, escudo, atravessar caixas, chute, teleporte e vida extra valem so para
+  quem pegou. Cada um detona so as proprias bombas-relogio. P2 ganhou teclas de item (I chute,
+  O teleporte, P detonar); quem esta no WASD usa E/T/F e o joystick age sobre quem o estiver usando.
+  Vida extra no 2 jogadores agora soma em `vidasJogador[dono]` (antes ia para `vidas`, ignorada).
+  Teste: `testes/verificar_itens_2p.cpp`.
+- **Travada ao começar a andar (introduzida pelo PR #2):** cada troca de faixa (fechar + abrir +
+  tocar no MCI) bloqueava a thread do jogo por 85-135 ms, exatamente ao sair do menu/entrar na fase;
+  depois o jogo recuperava os passos atrasados de uma vez e o personagem "pulava". Medido com o MCI
+  real; o tamanho do MP3 nao influi (faixa de 20 s trava igual a de 6 min). Correcao: o MCI roda
+  numa thread propria (`rodarThreadMusica`, Win32 `CreateThread` + `CRITICAL_SECTION` + evento, que
+  compila tambem no mingw do Linux); `iniciarMusica`/`pararMusica` so pedem a faixa. Benchmark de
+  logica + desenho por quadro ficou igual ao de antes (4-6 ms), entao o HUD novo nao pesa.
+- **Som de morte (`assets/audio/dead.wav`, ~1,5 s):** toca uma vez no lugar da musica a cada morte.
+  1 jogador: dura a tela de derrota e a musica da fase volta ao apertar R. 2 jogadores: cada queda
+  recomeca o som (`quedasComSom` entra na chave da faixa) e a fase volta quando ele termina
+  (`somMorteMs`, um pouco depois de renascer, para nao cortar o som). Game over (1 ou 2 jogadores):
+  fica so o som de morte. Teste em `testes/verificar_musica.cpp`.
+- **"Lagadinhas" andando durante o jogo todo (medido, corrigido 2026-10-29):**
+  1. Sem joystick, `atualizarEstadoControle` chamava `EnumDevices` do DirectInput a cada 1 s na
+     thread do jogo; essa varredura de USB/Bluetooth leva 175-240 ms -> o jogo congelava ~0,2 s
+     por segundo (existia desde o commit do joystick; com controle conectado nao acontece). Agora
+     busca so ao abrir e quando o Windows manda `WM_DEVICECHANGE` (`buscarControleDireto`).
+  2. O ritmo vinha do `WM_TIMER`, que so dispara em multiplos de ~15,6 ms: pedindo 16 ms os quadros
+     alternavam 15/31 ms (andar "engasgado"; `timeBeginPeriod` nao afeta o `SetTimer`). Agora o
+     `WinMain` roda `rodarLacoDoJogo`: PeekMessage + `MsgWaitForMultipleObjects` com relogio em 1 ms,
+     um `passoDoJogo` a cada 16 ms. O `WM_TIMER` ficou so de reserva (arrastar a janela).
+  Medicao (`testes/medir_laco.cpp`, partida andando): antes intervalos p10 15 / p50 31 ms; depois
+  p50 16,0 / p99 17,8 ms, 0 de 359 quadros fora de 12-20 ms.

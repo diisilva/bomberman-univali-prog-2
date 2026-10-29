@@ -225,7 +225,7 @@ int main(){
     assert(itensNoJoystick() && !somenteJoystick());
     // Modo AMIGOS: a bomba de um nao fere o outro; a propria continua ferindo.
     auto chamaEm=[](Posicao p,int dono){Bomba b;b.ativa=b.explodindo=true;b.tempoMs=500;b.posicao=p;b.celulasExplosao={p};b.dono=dono;return b;};
-    prepararArena();doisJogadores=true;modoRivais=false;imuneAPropriaBomba=false;controleConectado=false;dispositivoP1=dispositivoP2=TECLADO;
+    prepararArena();doisJogadores=true;modoRivais=false;poderes[0]=poderes[1]=PoderesJogador{};controleConectado=false;dispositivoP1=dispositivoP2=TECLADO;
     bombas.push_back(chamaEm(jogador2,0));atingirPersonagens(inimigos,estado,pontos);
     assert(estado==JOGANDO);
     bombas.push_back(chamaEm(jogador,0));atingirPersonagens(inimigos,estado,pontos);
@@ -272,12 +272,12 @@ int main(){
     assert(estado==JOGANDO && !marioAliado.ativo); // cair nao encerra a rodada
     marioAliado=MarioAliado{};macasMario.clear();
     // Bomba de inimigo: fere o jogador (mesmo com escudo) e nao fere inimigos.
-    prepararArena();doisJogadores=false;modoRivais=false;imuneAPropriaBomba=true;
+    prepararArena();doisJogadores=false;modoRivais=false;poderes[0].imuneAPropriaBomba=true;
     inimigos={{{3,3},true,100000}};inimigos[0].visualL=3;inimigos[0].visualC=3;
     bombas.push_back(chamaEm({3,3},DONO_INIMIGO));bombas.push_back(chamaEm(jogador,DONO_INIMIGO));
     atingirPersonagens(inimigos,estado,pontos);
     assert(inimigos[0].vivo && estado==DERROTA);
-    imuneAPropriaBomba=false;
+    poderes[0].imuneAPropriaBomba=false;
     // Inimigo com a habilidade solta bomba quando o jogador esta na linha de fogo.
     prepararArena();inimigos={{{5,7},true,100000}};inimigos[0].visualL=5;inimigos[0].visualC=7;
     inimigos[0].soltaBomba=true;inimigos[0].recargaBombaMs=0;

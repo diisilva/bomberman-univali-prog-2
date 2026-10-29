@@ -135,13 +135,13 @@ int main() {
         desenharAtribuicaoControles(g);salvarPreview(imagem,L"testes/preview_controles_sem_joystick.png");
         // Partida so no joystick: rodape, itens e painel final com botoes.
         controleConectado=true;nomeControle=L"Nintendo Switch Pro Controller";doisJogadores=false;dispositivoP1=JOYSTICK;
-        novaPartida(MANUAL,FACIL);possuiCartaChute=possuiCartaTeleporte=temBombaRelogio=true;
+        novaPartida(MANUAL,FACIL);poderes[0].cartaChute=poderes[0].cartaTeleporte=poderes[0].bombaRelogio=true;
         fundoInterface(g);desenharHUD(g);desenharMapa(g);desenharPainelLateral(g);desenharRodape(g);
         salvarPreview(imagem,L"testes/preview_partida_joystick.png");
         estado=DERROTA;tempoFimMs=DURACAO_MORTE_MS+500;
         fundoInterface(g);desenharHUD(g);desenharMapa(g);desenharPainelLateral(g);desenharRodape(g);desenharFimPartida(g);
         salvarPreview(imagem,L"testes/preview_fim_joystick.png");
-        possuiCartaChute=possuiCartaTeleporte=temBombaRelogio=false;
+        poderes[0]=PoderesJogador{};
         controleConectado=false;nomeControle.clear();dispositivoP1=TECLADO;modo=MENU;estado=JOGANDO;
         doisJogadores=doisAntes;
         desenharSeletorFases(g);

@@ -81,10 +81,11 @@ trocar de fase.
    a fase atual reinicia (bônus da fase são perdidos, como já manda o enunciado). Ao zerar as
    vidas, aparece uma tela de Game Over com opção de reiniciar do zero (fase 1, vidas cheias) ou
    voltar ao menu. Pontuação acumulada até ali é salva no arquivo de ranking antes de resetar.
-3. **Música:** gerada por código (sem depender de arquivos externos nem downloads), usando
-   `winmm`/`PlaySound` com um `.wav` sintetizado em memória (ex.: loop simples tipo chiptune para
-   o fundo + um "blip" curto para bomba/explosão/coleta de item). Sem dependências externas, sem
-   questão de licença.
+3. **Música:** ~~gerada por código (`.wav` sintetizado em memória via `PlaySound`)~~ —
+   substituída em 2026-10-29 (PR #2) por trilhas MP3 em `assets/audio/` (Pixabay, licença
+   Pixabay Content License, uso livre sem atribuição obrigatória), tocadas em loop via MCI
+   (`winmm`, tipo `mpegvideo`): `menu.mp3` nos menus, `phase_1..9.mp3` nas fases e
+   `bowser_phase.mp3` na fase 10. Fonte e créditos em `assets/audio/fonte_musicas.txt`.
 4. **Vidas iniciais:** 3.
 5. **Vida do boss:** 5 acertos de explosão, usando o mesmo mecanismo que já acerta inimigos
    comuns (`atingirPersonagens`), só que com um contador de vida em vez de morte no primeiro
@@ -254,7 +255,7 @@ cosmético, não deve atrasar as fases com pontuação maior do plano.
    (lido do CSV).
 6. **Critérios técnicos restantes:** template do BFS, sobrecargas, limpeza final de
    default-params.
-7. **Itens de 2.0:** segundo jogador, música procedural.
+7. **Itens de 2.0:** segundo jogador, música (procedural no início; MP3 por fase desde o PR #2).
 8. **Polimento:** HUD com tempo/movimentos/bombas/itens em tela, ajuste fino de otimização,
    atualização de `README.md`/`DEFESA.md`/`ROTEIRO_DEFESA.md` com as novas mecânicas.
 
