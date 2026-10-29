@@ -159,3 +159,15 @@ sem leituras fantasmas.
 
 `diagnosticar_controle.cpp` continua disponivel para inspecionar o caminho
 DirectInput bruto (`--live`), onde esse mesmo controle gera ruido.
+
+## Musicas da campanha
+
+```powershell
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic -static testes/verificar_musica.cpp -o verificacao_musica.exe -lgdiplus -lwinmm -ldinput8 -ldxguid -lgdi32
+.\verificacao_musica.exe
+```
+
+Simula os comandos MCI sem tocar audio nem abrir janela. Verifica menu,
+fases 1 a 9, Bowser na fase 10, loop, preservacao da faixa entre ticks,
+fechamento na troca, retorno do Insano e arquivo ausente sem tentativas por quadro.
+A reproducao e a qualidade dos MP3 devem ser conferidas jogando.

@@ -78,6 +78,11 @@ Branco, preto, azul e vermelho têm as mesmas habilidades. A escolha muda aparê
 
 ## Campanha
 
+A trilha usa os MP3 de `assets/audio/` em loop: `menu.mp3` nos menus,
+`phase_1.mp3` a `phase_9.mp3` nas fases correspondentes e `bowser_phase.mp3`
+na fase 10 (Bowser). A música troca automaticamente ao entrar ou sair da campanha
+e ao avançar de fase.
+
 ### Joystick e dois jogadores
 
 Conectar um controle **nunca** cria um jogador. Em **1 JOGAR** escolha 1 ou 2
